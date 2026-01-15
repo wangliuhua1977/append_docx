@@ -2,6 +2,7 @@ package app.docmerge;
 
 import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.hwpf.extractor.WordExtractor;
+import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackagePartName;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
@@ -91,6 +92,8 @@ public class MergeService {
             String relId = document.getPackagePart().addRelationship(partName, TargetMode.INTERNAL, ALT_CHUNK_REL).getId();
             CTAltChunk chunk = document.getDocument().getBody().addNewAltChunk();
             chunk.setId(relId);
+        } catch (InvalidFormatException e) {
+            throw new IOException("插入 altChunk 失败：" + docxPath.getFileName(), e);
         }
     }
 
