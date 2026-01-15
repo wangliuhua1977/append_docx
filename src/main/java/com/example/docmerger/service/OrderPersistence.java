@@ -31,7 +31,7 @@ public final class OrderPersistence {
             return Optional.empty();
         }
         List<String> ids = new ArrayList<>();
-        for (String line : raw.split("\R")) {
+        for (String line : raw.split("\\R")) {
             String trimmed = line.trim();
             if (!trimmed.isEmpty()) {
                 ids.add(trimmed);
