@@ -1,43 +1,35 @@
-# Doc Merger
+# 文档合并工具（Swing + FlatLaf）
 
-## Overview
-Doc Merger is a Swing desktop application for scanning a directory of `.doc` / `.docx` files and merging them in the exact order shown in the UI. The list supports drag-and-drop reordering, and custom order is persisted between app restarts.
+本项目是一个桌面应用，用于扫描指定目录下的 `.docx` / `.doc` 文件并按照列表顺序合并为一个输出 `.docx`。界面、提示与日志全部为简体中文（UTF-8）。
 
-## Drag-and-drop ordering
-- Drag rows inside the file table to reorder.
-- The merge operation always uses the current table order.
-- External drops are ignored.
+## 主要功能
+- 选择输入目录与输出目录（记忆上次选择）。
+- 仅扫描输入目录的直接子文件（不递归），过滤 `.docx` 和 `.doc`。
+- 默认排序：文件名前缀数字优先的自然排序；无数字则按不区分大小写的字典序，且排序稳定。
+- 支持表格内拖拽调整顺序，顺序立即持久化；每个输入目录都有独立的顺序记录。
+- 合并输出为一个 `.docx`，输出文件名可自定义（默认 `合并结果_yyyyMMdd_HHmmss.docx`）。
+- 后台任务执行合并，进度提示、可取消。
+- 实时中文日志面板，支持清空与复制全部。
+- 配置持久化：`~/.doc-merge-app/config.json`。
 
-## Custom order persistence
-- The current table order is saved as a list of stable IDs (normalized absolute file paths).
-- On restart, the app restores custom order when the same source directory is used.
-- Custom order is stored with Java Preferences per user.
-
-### Alignment rules on rescan
-When a rescan occurs (or the source directory changes):
-1. The app rebuilds the default list using natural sort.
-2. If a stored custom order exists for the same directory, the app aligns:
-   - Items found in the stored order are restored first.
-   - Missing files are ignored (counted in the log).
-   - New files not in the stored order are appended using natural sort.
-3. The log records whether custom order was applied and how many files were missing/new.
-
-## Reset behavior
-Click **Reset to Default Order** to return to natural sort immediately. This clears the persisted custom order so future restarts stay in default mode.
-
-## Acceptance tests (manual)
-1. Default natural sort order is correct for: `1xs.docx`, `2f23r23.doc`, `10a.docx`.
-2. Drag the 3rd item to position 1, click **Start Merge**:
-   - Output file order matches the dragged UI order.
-3. Restart the app with the same source directory:
-   - Custom order is restored.
-4. Delete a source file then rescan:
-   - Custom order partially restores; missing files are ignored; new files append; logs explain.
-5. Click **Reset to Default Order**:
-   - List returns to natural sort immediately.
-   - Restart preserves default (custom order cleared).
-
-## Build
-```bash
+## 构建与运行（Windows PowerShell）
+```powershell
 mvn -q -DskipTests package
+java -jar target\doc-merge-app-1.0.0.jar
 ```
+
+## .doc 处理策略说明
+- 优先使用 LibreOffice 进行 `.doc -> .docx` 转换，然后以 altChunk 的方式嵌入，尽量保留原始格式。
+- 自动检测 LibreOffice：
+  - Windows 下优先从常见安装路径与 `PATH` 中查找 `soffice.exe`。
+- 若未检测到 LibreOffice 或转换失败：
+  - 自动回退到 Apache POI 的 HWPF 兼容模式，提取文本段落并写入输出文档。
+  - 日志会以中文提示“兼容模式，格式可能无法完全保留”。
+
+## 使用提示
+1. 点击“选择输入目录”，选择包含 `.docx` / `.doc` 的文件夹。
+2. 需要时点击“刷新文件列表”。
+3. 在表格中拖拽行调整顺序，顺序会立即保存。
+4. 点击“选择输出目录”，填写或修改“输出文件名”。
+5. 点击“开始合并”即可生成合并后的 `.docx`。
+
