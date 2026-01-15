@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,7 +25,14 @@ public class ConfigStore {
             return new ConfigData();
         }
         try {
-            return mapper.readValue(configPath.toFile(), ConfigData.class);
+            ConfigData data = mapper.readValue(configPath.toFile(), ConfigData.class);
+            if (data.perDirOrder == null) {
+                data.perDirOrder = new HashMap<>();
+            }
+            if (data.lastFileList == null) {
+                data.lastFileList = new ArrayList<>();
+            }
+            return data;
         } catch (IOException e) {
             return new ConfigData();
         }
@@ -44,6 +52,7 @@ public class ConfigStore {
         private String lastOutputDir;
         private String lastOutputFileName;
         private Map<String, List<String>> perDirOrder = new HashMap<>();
+        private List<FileEntry> lastFileList = new ArrayList<>();
 
         public String getLastInputDir() {
             return lastInputDir;
@@ -75,6 +84,80 @@ public class ConfigStore {
 
         public void setPerDirOrder(Map<String, List<String>> perDirOrder) {
             this.perDirOrder = perDirOrder;
+        }
+
+        public List<FileEntry> getLastFileList() {
+            return lastFileList;
+        }
+
+        public void setLastFileList(List<FileEntry> lastFileList) {
+            this.lastFileList = lastFileList;
+        }
+    }
+
+    public static class FileEntry {
+        private String absolutePath;
+        private boolean checked;
+        private String name;
+        private String extension;
+        private Long size;
+        private Long lastModified;
+        private String sourceDir;
+
+        public String getAbsolutePath() {
+            return absolutePath;
+        }
+
+        public void setAbsolutePath(String absolutePath) {
+            this.absolutePath = absolutePath;
+        }
+
+        public boolean isChecked() {
+            return checked;
+        }
+
+        public void setChecked(boolean checked) {
+            this.checked = checked;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getExtension() {
+            return extension;
+        }
+
+        public void setExtension(String extension) {
+            this.extension = extension;
+        }
+
+        public Long getSize() {
+            return size;
+        }
+
+        public void setSize(Long size) {
+            this.size = size;
+        }
+
+        public Long getLastModified() {
+            return lastModified;
+        }
+
+        public void setLastModified(Long lastModified) {
+            this.lastModified = lastModified;
+        }
+
+        public String getSourceDir() {
+            return sourceDir;
+        }
+
+        public void setSourceDir(String sourceDir) {
+            this.sourceDir = sourceDir;
         }
     }
 }

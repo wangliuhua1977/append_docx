@@ -4,18 +4,36 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 
 public class FileItem {
+    public enum Status {
+        OK,
+        MISSING
+    }
+
     private final Path path;
     private final String name;
     private final String extension;
     private final long size;
     private final FileTime lastModified;
+    private final String sourceDir;
+    private boolean checked;
+    private Status status;
 
-    public FileItem(Path path, String name, String extension, long size, FileTime lastModified) {
+    public FileItem(Path path,
+                    String name,
+                    String extension,
+                    long size,
+                    FileTime lastModified,
+                    String sourceDir,
+                    boolean checked,
+                    Status status) {
         this.path = path;
         this.name = name;
         this.extension = extension;
         this.size = size;
         this.lastModified = lastModified;
+        this.sourceDir = sourceDir;
+        this.checked = checked;
+        this.status = status;
     }
 
     public Path getPath() {
@@ -36,5 +54,29 @@ public class FileItem {
 
     public FileTime getLastModified() {
         return lastModified;
+    }
+
+    public String getSourceDir() {
+        return sourceDir;
+    }
+
+    public boolean isChecked() {
+        return checked;
+    }
+
+    public void setChecked(boolean checked) {
+        this.checked = checked;
+    }
+
+    public Status getStatus() {
+        return status;
+    }
+
+    public void setStatus(Status status) {
+        this.status = status;
+    }
+
+    public boolean isMissing() {
+        return status == Status.MISSING;
     }
 }
