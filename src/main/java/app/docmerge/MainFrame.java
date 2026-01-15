@@ -15,9 +15,11 @@ import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
-import javax.swing.table.DefaultTableModel;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableColumnModel;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Toolkit;
@@ -25,24 +27,37 @@ import java.awt.datatransfer.StringSelection;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.text.DecimalFormat;
-import java.time.Instant;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 public class MainFrame extends JFrame {
+    private static final Pattern ILLEGAL_NAME = Pattern.compile("[\\\\/:*?\"<>|]");
+
     private final JTextField inputField = new JTextField();
     private final JTextField outputField = new JTextField();
     private final JTextField outputNameField = new JTextField();
     private final JButton selectInputButton = new JButton("选择输入目录");
     private final JButton refreshButton = new JButton("刷新文件列表");
+    private final JButton addFilesButton = new JButton("添加文件...");
+    private final JButton addDirButton = new JButton("添加目录...");
+    private final JButton removeSelectedButton = new JButton("移除选中");
+    private final JButton clearListButton = new JButton("清空列表");
+    private final JButton selectAllButton = new JButton("全选");
+    private final JButton selectNoneButton = new JButton("全不选");
+    private final JButton invertSelectButton = new JButton("反选");
     private final JButton selectOutputButton = new JButton("选择输出目录");
     private final JButton mergeButton = new JButton("开始合并");
     private final JButton cancelButton = new JButton("取消");
@@ -51,8 +66,8 @@ public class MainFrame extends JFrame {
     private final JProgressBar progressBar = new JProgressBar();
     private final JLabel statusLabel = new JLabel("准备就绪");
     private final JTextArea logArea = new JTextArea();
-    private final DefaultTableModel tableModel;
-    private final JTable table;
+    private final FileTableModel tableModel = new FileTableModel();
+    private final JTable table = new JTable(tableModel);
 
     private final ConfigStore configStore = new ConfigStore();
     private final FileScanner fileScanner = new FileScanner();
@@ -64,32 +79,28 @@ public class MainFrame extends JFrame {
     public MainFrame() {
         super("文档合并工具");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(1000, 700);
+        setSize(1200, 760);
         setLocationRelativeTo(null);
 
         inputField.setEditable(false);
         outputField.setEditable(false);
         outputNameField.setText(defaultOutputName());
 
-        String[] columns = {"序号", "文件名", "扩展名", "大小", "最后修改"};
-        tableModel = new DefaultTableModel(columns, 0) {
-            @Override
-            public boolean isCellEditable(int row, int column) {
-                return false;
-            }
-        };
-        table = new JTable(tableModel);
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDragEnabled(true);
         table.setDropMode(javax.swing.DropMode.INSERT_ROWS);
         table.setTransferHandler(new DragReorderSupport(table, this::handleReorder));
+        table.setDefaultRenderer(Object.class, new MissingAwareRenderer(tableModel));
 
         TableColumnModel columnModel = table.getColumnModel();
-        columnModel.getColumn(0).setPreferredWidth(50);
-        columnModel.getColumn(1).setPreferredWidth(400);
-        columnModel.getColumn(2).setPreferredWidth(80);
-        columnModel.getColumn(3).setPreferredWidth(120);
-        columnModel.getColumn(4).setPreferredWidth(200);
+        columnModel.getColumn(0).setPreferredWidth(60);
+        columnModel.getColumn(1).setPreferredWidth(60);
+        columnModel.getColumn(2).setPreferredWidth(320);
+        columnModel.getColumn(3).setPreferredWidth(80);
+        columnModel.getColumn(4).setPreferredWidth(100);
+        columnModel.getColumn(5).setPreferredWidth(160);
+        columnModel.getColumn(6).setPreferredWidth(240);
+        columnModel.getColumn(7).setPreferredWidth(100);
 
         logArea.setEditable(false);
         logArea.setLineWrap(true);
@@ -112,19 +123,29 @@ public class MainFrame extends JFrame {
 
         JPanel inputPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         inputPanel.add(selectInputButton);
-        inputField.setPreferredSize(new Dimension(600, 28));
+        inputField.setPreferredSize(new Dimension(550, 28));
         inputPanel.add(inputField);
         inputPanel.add(refreshButton);
 
+        JPanel listActions = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        listActions.add(addFilesButton);
+        listActions.add(addDirButton);
+        listActions.add(removeSelectedButton);
+        listActions.add(clearListButton);
+        listActions.add(selectAllButton);
+        listActions.add(selectNoneButton);
+        listActions.add(invertSelectButton);
+
         JPanel outputPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         outputPanel.add(selectOutputButton);
-        outputField.setPreferredSize(new Dimension(600, 28));
+        outputField.setPreferredSize(new Dimension(550, 28));
         outputPanel.add(outputField);
         outputPanel.add(new JLabel("输出文件名"));
-        outputNameField.setPreferredSize(new Dimension(220, 28));
+        outputNameField.setPreferredSize(new Dimension(240, 28));
         outputPanel.add(outputNameField);
 
         panel.add(inputPanel);
+        panel.add(listActions);
         panel.add(outputPanel);
         return panel;
     }
@@ -159,7 +180,7 @@ public class MainFrame extends JFrame {
         logActions.add(clearLogButton);
         logActions.add(copyLogButton);
         logPanel.add(logActions, BorderLayout.SOUTH);
-        logPanel.setPreferredSize(new Dimension(800, 200));
+        logPanel.setPreferredSize(new Dimension(800, 220));
 
         panel.add(actions, BorderLayout.NORTH);
         panel.add(progressPanel, BorderLayout.CENTER);
@@ -171,6 +192,13 @@ public class MainFrame extends JFrame {
         selectInputButton.addActionListener(event -> chooseDirectory(true));
         selectOutputButton.addActionListener(event -> chooseDirectory(false));
         refreshButton.addActionListener(event -> refreshFiles());
+        addFilesButton.addActionListener(event -> addFiles());
+        addDirButton.addActionListener(event -> addDirectory());
+        removeSelectedButton.addActionListener(event -> removeSelected());
+        clearListButton.addActionListener(event -> clearList());
+        selectAllButton.addActionListener(event -> selectAll());
+        selectNoneButton.addActionListener(event -> selectNone());
+        invertSelectButton.addActionListener(event -> invertSelection());
         mergeButton.addActionListener(event -> startMerge());
         cancelButton.addActionListener(event -> cancelMerge());
         clearLogButton.addActionListener(event -> logger.clear());
@@ -178,8 +206,7 @@ public class MainFrame extends JFrame {
         outputNameField.addFocusListener(new FocusAdapter() {
             @Override
             public void focusLost(FocusEvent e) {
-                configData.setLastOutputFileName(outputNameField.getText().trim());
-                configStore.save(configData);
+                persistState();
             }
         });
     }
@@ -192,12 +219,67 @@ public class MainFrame extends JFrame {
         if (configData.getLastOutputDir() != null) {
             outputField.setText(configData.getLastOutputDir());
         }
-        if (configData.getLastOutputFileName() != null) {
+        if (configData.getLastOutputFileName() != null && !configData.getLastOutputFileName().isBlank()) {
             outputNameField.setText(configData.getLastOutputFileName());
         }
-        if (configData.getLastInputDir() != null) {
+        if (!configData.getLastFileList().isEmpty()) {
+            currentItems = loadFileList(configData.getLastFileList());
+            refreshTable();
+        } else if (configData.getLastInputDir() != null) {
             refreshFiles();
         }
+    }
+
+    private List<FileItem> loadFileList(List<ConfigStore.FileEntry> entries) {
+        List<FileItem> items = new ArrayList<>();
+        for (ConfigStore.FileEntry entry : entries) {
+            if (entry.getAbsolutePath() == null) {
+                continue;
+            }
+            Path path = Path.of(entry.getAbsolutePath());
+            if (Files.exists(path)) {
+                try {
+                    BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
+                    String sourceDir = entry.getSourceDir();
+                    if (sourceDir == null || sourceDir.isBlank()) {
+                        sourceDir = path.getParent() == null ? "" : path.getParent().toString();
+                    }
+                    items.add(new FileItem(path,
+                            path.getFileName().toString(),
+                            fileScanner.extensionOf(path.getFileName().toString()),
+                            attrs.size(),
+                            attrs.lastModifiedTime(),
+                            sourceDir,
+                            entry.isChecked(),
+                            FileItem.Status.OK));
+                } catch (IOException e) {
+                    items.add(createMissingItem(entry, path));
+                }
+            } else {
+                FileItem missing = createMissingItem(entry, path);
+                items.add(missing);
+                logger.warn("文件不存在，已标记为缺失：" + path);
+            }
+        }
+        return items;
+    }
+
+    private FileItem createMissingItem(ConfigStore.FileEntry entry, Path path) {
+        String name = entry.getName();
+        if (name == null || name.isBlank()) {
+            name = path.getFileName() == null ? path.toString() : path.getFileName().toString();
+        }
+        String extension = entry.getExtension();
+        if (extension == null || extension.isBlank()) {
+            extension = fileScanner.extensionOf(name);
+        }
+        long size = entry.getSize() == null ? 0L : entry.getSize();
+        FileTime lastModified = entry.getLastModified() == null ? null : FileTime.fromMillis(entry.getLastModified());
+        String sourceDir = entry.getSourceDir();
+        if (sourceDir == null || sourceDir.isBlank()) {
+            sourceDir = path.getParent() == null ? "" : path.getParent().toString();
+        }
+        return new FileItem(path, name, extension, size, lastModified, sourceDir, false, FileItem.Status.MISSING);
     }
 
     private void chooseDirectory(boolean input) {
@@ -213,7 +295,7 @@ public class MainFrame extends JFrame {
             } else {
                 outputField.setText(selected.toString());
                 configData.setLastOutputDir(selected.toString());
-                configStore.save(configData);
+                persistState();
             }
         }
     }
@@ -224,20 +306,73 @@ public class MainFrame extends JFrame {
             showError("请先选择输入目录");
             return;
         }
+        addDirectoryFiles(inputDir, true);
+    }
+
+    private void addDirectory() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        int result = chooser.showOpenDialog(this);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            addDirectoryFiles(chooser.getSelectedFile().toPath(), false);
+        }
+    }
+
+    private void addDirectoryFiles(Path directory, boolean replaceSameDir) {
         try {
-            List<FileItem> scanned = fileScanner.scan(inputDir);
+            List<FileItem> scanned = fileScanner.scan(directory);
             Map<String, List<String>> perDirOrder = configData.getPerDirOrder();
-            List<String> savedOrder = perDirOrder.getOrDefault(inputDir.toString(), Collections.emptyList());
+            List<String> savedOrder = perDirOrder.getOrDefault(directory.toString(), Collections.emptyList());
             List<FileItem> ordered = applySavedOrder(scanned, savedOrder);
-            currentItems = ordered;
-            refreshTable();
-            perDirOrder.put(inputDir.toString(), ordered.stream().map(FileItem::getName).toList());
-            configStore.save(configData);
-            logger.info("扫描完成，共 " + ordered.size() + " 个文件");
+            if (replaceSameDir) {
+                currentItems.removeIf(item -> directory.toString().equals(item.getSourceDir()));
+            }
+            int added = addItems(ordered);
+            perDirOrder.put(directory.toString(), ordered.stream().map(FileItem::getName).toList());
+            persistState();
+            logger.info("扫描完成，共添加 " + added + " 个文件（目录：" + directory + "）");
         } catch (IOException e) {
             logger.error("扫描文件失败", e);
             showError("扫描文件失败：" + e.getMessage());
         }
+    }
+
+    private void addFiles() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setMultiSelectionEnabled(true);
+        chooser.setFileFilter(new FileNameExtensionFilter("Word 文档 (*.doc, *.docx)", "doc", "docx"));
+        int result = chooser.showOpenDialog(this);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            var files = chooser.getSelectedFiles();
+            List<FileItem> items = new ArrayList<>();
+            for (var file : files) {
+                fileScanner.createFileItem(file.toPath(), true).ifPresent(items::add);
+            }
+            items.sort(fileScanner.defaultComparator());
+            int added = addItems(items);
+            persistState();
+            logger.info("已添加文件 " + added + " 个");
+        }
+    }
+
+    private int addItems(List<FileItem> items) {
+        Set<String> existing = new HashSet<>();
+        for (FileItem item : currentItems) {
+            existing.add(item.getPath().toAbsolutePath().toString());
+        }
+        int added = 0;
+        for (FileItem item : items) {
+            String key = item.getPath().toAbsolutePath().toString();
+            if (existing.contains(key)) {
+                logger.warn("已存在，跳过：" + item.getPath());
+                continue;
+            }
+            currentItems.add(item);
+            existing.add(key);
+            added++;
+        }
+        refreshTable();
+        return added;
     }
 
     private List<FileItem> applySavedOrder(List<FileItem> scanned, List<String> savedOrder) {
@@ -262,15 +397,7 @@ public class MainFrame extends JFrame {
     }
 
     private void refreshTable() {
-        tableModel.setRowCount(0);
-        DecimalFormat sizeFormat = new DecimalFormat("#,###");
-        DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        int index = 1;
-        for (FileItem item : currentItems) {
-            String size = sizeFormat.format(item.getSize());
-            LocalDateTime time = LocalDateTime.ofInstant(Instant.ofEpochMilli(item.getLastModified().toMillis()), ZoneId.systemDefault());
-            tableModel.addRow(new Object[]{index++, item.getName(), item.getExtension(), size, time.format(timeFormatter)});
-        }
+        tableModel.setItems(currentItems);
     }
 
     private void handleReorder(int[] fromRows, int toRow) {
@@ -285,9 +412,11 @@ public class MainFrame extends JFrame {
         List<FileItem> moving = new ArrayList<>();
         for (int i = fromList.size() - 1; i >= 0; i--) {
             int row = fromList.get(i);
-            moving.add(0, currentItems.remove(row));
-            if (row < toRow) {
-                toRow--;
+            if (row >= 0 && row < currentItems.size()) {
+                moving.add(0, currentItems.remove(row));
+                if (row < toRow) {
+                    toRow--;
+                }
             }
         }
         if (toRow > currentItems.size()) {
@@ -295,17 +424,80 @@ public class MainFrame extends JFrame {
         }
         currentItems.addAll(toRow, moving);
         refreshTable();
-        persistOrder();
+        persistState();
     }
 
-    private void persistOrder() {
-        Path inputDir = getInputDir();
-        if (inputDir == null) {
+    private void removeSelected() {
+        int[] rows = table.getSelectedRows();
+        if (rows.length == 0) {
+            showError("请选择需要移除的行");
             return;
         }
-        configData.getPerDirOrder().put(inputDir.toString(), currentItems.stream().map(FileItem::getName).toList());
+        tableModel.removeRows(rows);
+        currentItems = tableModel.getItems();
+        persistState();
+        logger.info("已移除选中项：" + rows.length + " 行");
+    }
+
+    private void clearList() {
+        int confirm = JOptionPane.showConfirmDialog(this, "确认清空列表吗？", "确认", JOptionPane.YES_NO_OPTION);
+        if (confirm != JOptionPane.YES_OPTION) {
+            return;
+        }
+        tableModel.clear();
+        currentItems = tableModel.getItems();
+        persistState();
+        logger.info("列表已清空");
+    }
+
+    private void selectAll() {
+        tableModel.setAllChecked(true);
+        persistState();
+    }
+
+    private void selectNone() {
+        tableModel.setAllChecked(false);
+        persistState();
+    }
+
+    private void invertSelection() {
+        tableModel.invertChecked();
+        persistState();
+    }
+
+    private void persistState() {
         configData.setLastOutputFileName(outputNameField.getText().trim());
+        configData.setLastFileList(serializeItems());
+        configData.setPerDirOrder(buildPerDirOrder());
         configStore.save(configData);
+    }
+
+    private Map<String, List<String>> buildPerDirOrder() {
+        Map<String, List<String>> result = new HashMap<>();
+        for (FileItem item : currentItems) {
+            String source = item.getSourceDir();
+            if (source == null) {
+                source = "";
+            }
+            result.computeIfAbsent(source, key -> new ArrayList<>()).add(item.getName());
+        }
+        return result;
+    }
+
+    private List<ConfigStore.FileEntry> serializeItems() {
+        List<ConfigStore.FileEntry> entries = new ArrayList<>();
+        for (FileItem item : currentItems) {
+            ConfigStore.FileEntry entry = new ConfigStore.FileEntry();
+            entry.setAbsolutePath(item.getPath().toAbsolutePath().toString());
+            entry.setChecked(item.isChecked());
+            entry.setName(item.getName());
+            entry.setExtension(item.getExtension());
+            entry.setSize(item.getSize());
+            entry.setLastModified(item.getLastModified() == null ? null : item.getLastModified().toMillis());
+            entry.setSourceDir(item.getSourceDir());
+            entries.add(entry);
+        }
+        return entries;
     }
 
     private void startMerge() {
@@ -314,15 +506,42 @@ public class MainFrame extends JFrame {
             return;
         }
         Path outputDir = getOutputDir();
-        if (getInputDir() == null || outputDir == null) {
-            showError("请选择输入和输出目录");
+        if (outputDir == null) {
+            showError("请选择输出目录");
             return;
         }
         if (currentItems.isEmpty()) {
             showError("没有可合并的文件");
             return;
         }
-        persistOrder();
+        String outputName = normalizeOutputName();
+        if (outputName == null) {
+            return;
+        }
+        Path outputFile = outputDir.resolve(outputName);
+        if (Files.exists(outputFile)) {
+            int overwrite = JOptionPane.showConfirmDialog(this, "输出文件已存在，是否覆盖？", "确认覆盖", JOptionPane.YES_NO_OPTION);
+            if (overwrite != JOptionPane.YES_OPTION) {
+                return;
+            }
+        }
+
+        List<FileItem> toMerge = new ArrayList<>();
+        for (FileItem item : currentItems) {
+            if (item.isMissing()) {
+                logger.warn("文件不存在，已跳过：" + item.getPath());
+                continue;
+            }
+            if (item.isChecked()) {
+                toMerge.add(item);
+            }
+        }
+        if (toMerge.isEmpty()) {
+            showError("未选择任何待合并文件");
+            return;
+        }
+        configData.setLastOutputFileName(outputName);
+        persistState();
         mergeButton.setEnabled(false);
         cancelButton.setEnabled(true);
         progressBar.setIndeterminate(true);
@@ -334,7 +553,7 @@ public class MainFrame extends JFrame {
             @Override
             protected Boolean doInBackground() {
                 try {
-                    service.merge(new ArrayList<>(currentItems), outputDir, outputNameField.getText(), logger,
+                    service.merge(new ArrayList<>(toMerge), outputDir, outputName, logger,
                             (current, total, name) -> publish("正在处理 " + current + "/" + total + "：" + name),
                             this::isCancelled);
                     return true;
@@ -385,6 +604,24 @@ public class MainFrame extends JFrame {
         worker.execute();
     }
 
+    private String normalizeOutputName() {
+        String text = outputNameField.getText();
+        if (text == null || text.trim().isBlank()) {
+            showError("请输入输出文件名");
+            return null;
+        }
+        String name = text.trim();
+        if (ILLEGAL_NAME.matcher(name).find()) {
+            showError("输出文件名包含非法字符：\\ / : * ? \" < > |");
+            return null;
+        }
+        if (!name.toLowerCase(Locale.ROOT).endsWith(".docx")) {
+            name = name + ".docx";
+        }
+        outputNameField.setText(name);
+        return name;
+    }
+
     private void cancelMerge() {
         if (worker != null && !worker.isDone()) {
             worker.cancel(true);
@@ -423,5 +660,27 @@ public class MainFrame extends JFrame {
 
     private void showError(String message) {
         JOptionPane.showMessageDialog(this, message, "错误", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private static class MissingAwareRenderer extends DefaultTableCellRenderer {
+        private final FileTableModel model;
+
+        public MissingAwareRenderer(FileTableModel model) {
+            this.model = model;
+        }
+
+        @Override
+        public java.awt.Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+            java.awt.Component comp = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+            if (row >= 0 && row < model.getRowCount()) {
+                FileItem item = model.getItemAt(row);
+                if (item.isMissing()) {
+                    comp.setForeground(Color.GRAY);
+                } else {
+                    comp.setForeground(isSelected ? table.getSelectionForeground() : table.getForeground());
+                }
+            }
+            return comp;
+        }
     }
 }

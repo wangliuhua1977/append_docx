@@ -4,10 +4,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -25,9 +27,7 @@ public class FileScanner {
                     .forEach(path -> {
                         try {
                             BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
-                            String fileName = path.getFileName().toString();
-                            String extension = extensionOf(fileName);
-                            items.add(new FileItem(path, fileName, extension, attrs.size(), attrs.lastModifiedTime()));
+                            items.add(createFileItem(path, directory.toString(), attrs.size(), attrs.lastModifiedTime(), true, FileItem.Status.OK));
                         } catch (IOException ignored) {
                             // 忽略无法读取的文件
                         }
@@ -35,6 +35,23 @@ public class FileScanner {
         }
         items.sort(defaultComparator());
         return items;
+    }
+
+    public Optional<FileItem> createFileItem(Path path, boolean checked) {
+        if (path == null) {
+            return Optional.empty();
+        }
+        String fileName = path.getFileName().toString();
+        if (!isDocFile(fileName)) {
+            return Optional.empty();
+        }
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
+            String sourceDir = path.getParent() == null ? "" : path.getParent().toString();
+            return Optional.of(createFileItem(path, sourceDir, attrs.size(), attrs.lastModifiedTime(), checked, FileItem.Status.OK));
+        } catch (IOException e) {
+            return Optional.empty();
+        }
     }
 
     public Comparator<FileItem> defaultComparator() {
@@ -57,12 +74,23 @@ public class FileScanner {
                 });
     }
 
-    private boolean isDocFile(String name) {
+    private FileItem createFileItem(Path path,
+                                    String sourceDir,
+                                    long size,
+                                    FileTime lastModified,
+                                    boolean checked,
+                                    FileItem.Status status) {
+        String fileName = path.getFileName().toString();
+        String extension = extensionOf(fileName);
+        return new FileItem(path, fileName, extension, size, lastModified, sourceDir, checked, status);
+    }
+
+    public boolean isDocFile(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
         return lower.endsWith(".docx") || lower.endsWith(".doc");
     }
 
-    private String extensionOf(String name) {
+    public String extensionOf(String name) {
         int idx = name.lastIndexOf('.');
         return idx >= 0 ? name.substring(idx + 1) : "";
     }
