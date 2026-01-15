@@ -77,7 +77,7 @@ public class MainFrame extends JFrame {
     private SwingWorker<Boolean, String> worker;
 
     public MainFrame() {
-        super("文档合并工具");
+        super("Word文档合并工具-- 黄莉专用版");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(1200, 760);
         setLocationRelativeTo(null);
