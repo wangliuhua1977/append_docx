@@ -23,7 +23,7 @@ public class FileScanner {
         }
         try (var stream = Files.list(directory)) {
             stream.filter(path -> Files.isRegularFile(path))
-                    .filter(path -> isDocFile(path.getFileName().toString()))
+                    .filter(path -> isSupportedFile(path.getFileName().toString()))
                     .forEach(path -> {
                         try {
                             BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
@@ -42,7 +42,7 @@ public class FileScanner {
             return Optional.empty();
         }
         String fileName = path.getFileName().toString();
-        if (!isDocFile(fileName)) {
+        if (!isSupportedFile(fileName)) {
             return Optional.empty();
         }
         try {
@@ -83,6 +83,18 @@ public class FileScanner {
         String fileName = path.getFileName().toString();
         String extension = extensionOf(fileName);
         return new FileItem(path, fileName, extension, size, lastModified, sourceDir, checked, status);
+    }
+
+    public boolean isSupportedFile(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".docx")
+                || lower.endsWith(".doc")
+                || lower.endsWith(".pdf")
+                || lower.endsWith(".png")
+                || lower.endsWith(".jpg")
+                || lower.endsWith(".jpeg")
+                || lower.endsWith(".bmp")
+                || lower.endsWith(".gif");
     }
 
     public boolean isDocFile(String name) {

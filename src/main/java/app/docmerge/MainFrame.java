@@ -85,7 +85,7 @@ public class MainFrame extends JFrame {
     private final DocComConverterResolver converterResolver = new DocComConverterResolver(converterSelector);
     private ConfigStore.ConfigData configData;
     private List<FileItem> currentItems = new ArrayList<>();
-    private SwingWorker<Boolean, String> worker;
+    private SwingWorker<Boolean, ProgressStatus> worker;
     private DocComConverterResolver.Resolution probeResolution;
 
     public MainFrame() {
@@ -109,10 +109,11 @@ public class MainFrame extends JFrame {
         columnModel.getColumn(1).setPreferredWidth(60);
         columnModel.getColumn(2).setPreferredWidth(320);
         columnModel.getColumn(3).setPreferredWidth(80);
-        columnModel.getColumn(4).setPreferredWidth(100);
-        columnModel.getColumn(5).setPreferredWidth(160);
-        columnModel.getColumn(6).setPreferredWidth(240);
-        columnModel.getColumn(7).setPreferredWidth(100);
+        columnModel.getColumn(4).setPreferredWidth(80);
+        columnModel.getColumn(5).setPreferredWidth(100);
+        columnModel.getColumn(6).setPreferredWidth(160);
+        columnModel.getColumn(7).setPreferredWidth(240);
+        columnModel.getColumn(8).setPreferredWidth(100);
 
         logArea.setEditable(false);
         logArea.setLineWrap(true);
@@ -389,7 +390,9 @@ public class MainFrame extends JFrame {
     private void addFiles() {
         JFileChooser chooser = new JFileChooser();
         chooser.setMultiSelectionEnabled(true);
-        chooser.setFileFilter(new FileNameExtensionFilter("Word 文档 (*.doc, *.docx)", "doc", "docx"));
+        chooser.setFileFilter(new FileNameExtensionFilter(
+                "支持的文件 (*.doc, *.docx, *.pdf, *.png, *.jpg, *.jpeg, *.bmp, *.gif)",
+                "doc", "docx", "pdf", "png", "jpg", "jpeg", "bmp", "gif"));
         int result = chooser.showOpenDialog(this);
         if (result == JFileChooser.APPROVE_OPTION) {
             var files = chooser.getSelectedFiles();
@@ -611,12 +614,12 @@ public class MainFrame extends JFrame {
 
         MergeService service = new MergeService();
         DocConverterMode mode = getSelectedMode();
-        worker = new SwingWorker<>() {
+        worker = new SwingWorker<Boolean, ProgressStatus>() {
             @Override
             protected Boolean doInBackground() {
                 try {
                     service.merge(new ArrayList<>(toMerge), outputDir, outputName, mode, converterResolver, logger,
-                            (current, total, name) -> publish("正在处理 " + current + "/" + total + "：" + name),
+                            (current, total, name) -> publish(new ProgressStatus(current, total, name)),
                             this::isCancelled);
                     return true;
                 } catch (MergeService.MergeCancelledException e) {
@@ -630,9 +633,13 @@ public class MainFrame extends JFrame {
             }
 
             @Override
-            protected void process(List<String> chunks) {
+            protected void process(List<ProgressStatus> chunks) {
                 if (!chunks.isEmpty()) {
-                    String message = chunks.get(chunks.size() - 1);
+                    ProgressStatus status = chunks.get(chunks.size() - 1);
+                    progressBar.setIndeterminate(false);
+                    progressBar.setMaximum(status.total());
+                    progressBar.setValue(status.current());
+                    String message = "正在处理 " + status.current() + "/" + status.total() + "：" + status.name();
                     progressBar.setString(message);
                     statusLabel.setText(message);
                 }
@@ -764,7 +771,7 @@ public class MainFrame extends JFrame {
     }
 
     private boolean isDocItem(FileItem item) {
-        return "doc".equalsIgnoreCase(item.getExtension());
+        return item.getFileType() == FileItem.FileType.DOC;
     }
 
     private void refreshComProbeStatus(boolean forceRefresh) {
@@ -833,6 +840,9 @@ public class MainFrame extends JFrame {
         configData.setDocConverterMode(getSelectedMode().name());
         persistState();
         refreshComProbeStatus(false);
+    }
+
+    private record ProgressStatus(int current, int total, String name) {
     }
 
     private static class MissingAwareRenderer extends DefaultTableCellRenderer {

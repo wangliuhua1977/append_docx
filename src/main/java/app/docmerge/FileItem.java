@@ -4,6 +4,37 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 
 public class FileItem {
+    public enum FileType {
+        DOC("DOC"),
+        DOCX("DOCX"),
+        IMAGE("图片"),
+        PDF("PDF");
+
+        private final String label;
+
+        FileType(String label) {
+            this.label = label;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public static FileType fromExtension(String extension) {
+            if (extension == null) {
+                return DOCX;
+            }
+            String lower = extension.toLowerCase();
+            return switch (lower) {
+                case "doc" -> DOC;
+                case "docx" -> DOCX;
+                case "pdf" -> PDF;
+                case "png", "jpg", "jpeg", "bmp", "gif" -> IMAGE;
+                default -> DOCX;
+            };
+        }
+    }
+
     public enum Status {
         OK,
         MISSING
@@ -46,6 +77,10 @@ public class FileItem {
 
     public String getExtension() {
         return extension;
+    }
+
+    public FileType getFileType() {
+        return FileType.fromExtension(extension);
     }
 
     public long getSize() {

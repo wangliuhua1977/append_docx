@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class FileTableModel extends AbstractTableModel {
-    private static final String[] COLUMNS = {"选择", "序号", "文件名", "扩展名", "大小", "最后修改", "来源目录", "状态"};
+    private static final String[] COLUMNS = {"选择", "序号", "文件名", "扩展名", "类型", "大小", "最后修改", "来源目录", "状态"};
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DecimalFormat SIZE_FORMAT = new DecimalFormat("#,###");
     private List<FileItem> items = new ArrayList<>();
@@ -56,10 +56,11 @@ public class FileTableModel extends AbstractTableModel {
             case 1 -> rowIndex + 1;
             case 2 -> item.getName();
             case 3 -> item.getExtension();
-            case 4 -> formatSize(item.getSize(), item.isMissing());
-            case 5 -> formatTime(item);
-            case 6 -> item.getSourceDir();
-            case 7 -> item.isMissing() ? "文件不存在" : "正常";
+            case 4 -> item.getFileType().getLabel();
+            case 5 -> formatSize(item.getSize(), item.isMissing());
+            case 6 -> formatTime(item);
+            case 7 -> item.getSourceDir();
+            case 8 -> item.isMissing() ? "文件不存在" : "正常";
             default -> "";
         };
     }
