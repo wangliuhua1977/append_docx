@@ -26,11 +26,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class MergeService {
     private static final String ALT_CHUNK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk";
-    private final DocComConverterSelector converterSelector = new DocComConverterSelector();
-
     public void merge(List<FileItem> items,
                       Path outputDir,
                       String outputName,
+                      DocConverterMode mode,
+                      DocComConverterResolver resolver,
                       UiLogger logger,
                       ProgressCallback callback,
                       CancelSignal cancelSignal) throws IOException {
@@ -55,28 +55,33 @@ public class MergeService {
                     .filter(item -> item.getName().toLowerCase(Locale.ROOT).endsWith(".doc"))
                     .toList();
             if (!docItems.isEmpty()) {
-                DocComConverterSelector.ProbeSummary probeSummary = converterSelector.probeAll();
-                DocComConverterSelector.Selection selection = probeSummary.selection();
+                logger.info("DOC 转换模式：" + mode.getLabel());
+                DocComConverterResolver.Resolution resolution = resolver.resolve(mode, false);
+                DocComConverterSelector.Selection selection = resolution.selection();
                 if (selection == null) {
-                    logProbeFailure(logger, probeSummary);
-                    throw new IOException("检测到 .doc 文件，但 Word/WPS COM 不可用，已阻止合并。");
+                    logProbeFailure(logger, resolution.probeSummary());
+                    throw new IOException(resolution.errorMessage() == null
+                            ? "检测到 .doc 文件，但当前模式不可用，已阻止合并。"
+                            : resolution.errorMessage());
                 }
-                logger.info("已选择转换引擎：" + selection.status().engineName());
+                logger.info("选择引擎：" + selection.status().engineName());
                 tempDir = Files.createTempDirectory("doc-merge-com-");
-                for (int i = 0; i < docItems.size(); i++) {
-                    if (cancelSignal.isCancelled()) {
-                        throw new MergeCancelledException("用户已取消合并");
-                    }
-                    FileItem item = docItems.get(i);
-                    logger.info("开始转换：" + item.getPath());
-                    List<Path> outputs = selection.converter().convertBatch(List.of(item.getPath()), tempDir);
-                    if (outputs.isEmpty()) {
-                        throw new DocComConversionException("转换失败，未生成输出文件",
-                                item.getPath().toString(), "", "未生成输出文件", -1);
-                    }
-                    Path output = outputs.get(0);
-                    convertedMap.put(item.getPath(), output);
-                    logger.info("转换完成：" + item.getPath());
+                if (cancelSignal.isCancelled()) {
+                    throw new MergeCancelledException("用户已取消合并");
+                }
+                List<Path> inputs = docItems.stream().map(FileItem::getPath).toList();
+                logger.info("开始批量转换 .doc 文件，共 " + inputs.size() + " 个");
+                List<Path> outputs = selection.converter().convertBatch(inputs, tempDir);
+                if (outputs.size() != inputs.size()) {
+                    throw new DocComConversionException("转换失败，输出文件数量不一致",
+                            inputs.get(0).toString(), "", "输出数量=" + outputs.size(), -1);
+                }
+                for (int i = 0; i < inputs.size(); i++) {
+                    convertedMap.put(inputs.get(i), outputs.get(i));
+                    logger.info("转换完成：" + inputs.get(i));
+                }
+                if (cancelSignal.isCancelled()) {
+                    throw new MergeCancelledException("用户已取消合并");
                 }
             }
             try (XWPFDocument document = new XWPFDocument()) {

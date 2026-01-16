@@ -21,6 +21,7 @@
   - 上次输入/输出目录、输出文件名。
   - 合并列表顺序与勾选状态（含多目录混合）。
   - 每个目录的独立排序偏好（用于目录刷新）。
+  - `docConverterMode`：DOC 转换模式（`AUTO` / `WORD_ONLY` / `WPS_ONLY`）。
 
 ## 构建与运行（Windows PowerShell）
 ```powershell
@@ -29,25 +30,28 @@ java -jar target\doc-merge-app-1.0.0.jar
 ```
 
 ## .doc 完美转换说明（硬性要求）
-- `.doc -> .docx` 必须使用 COM 自动化引擎，优先级固定：
-  1. Microsoft Word COM（ProgID：`Word.Application`）
-  2. WPS 文字 COM（ProgID：`kwps.application`）
-  3. 若两者都不可用：**硬性失败**（阻止合并，不生成任何输出文件）。
+- `.doc -> .docx` 必须使用 COM 自动化引擎（禁止 LibreOffice、禁止 Apache POI HWPF）。
+- 支持三种“DOC 转换引擎”模式（UI 中可选，持久化到配置）：
+  1. 自动（Word优先）：优先 Word COM，若不可用再尝试 WPS COM。
+  2. 仅 Word：强制使用 Microsoft Word COM，不可用则**硬性失败**。
+  3. 仅 WPS：强制使用 WPS 文字 COM，不可用则**硬性失败**。
 - 仅支持 Windows 环境，且需要本机已安装 Microsoft Word 或 WPS 文字。
 - 程序会在启动时检测可用性（PowerShell + COM 探测），并在界面显示：
-  - `Word 完美转换：可用/不可用`
-  - `WPS 完美转换：可用/不可用`
-  - `当前引擎：Microsoft Word / WPS 文字 / 无`
-- 当不可用时：
+  - `Word：可用/不可用`
+  - `WPS：可用/不可用`
+  - `当前模式：自动（Word优先）/仅 Word/仅 WPS`
+- 当当前模式不可用时：
   - 将阻止 `.doc` 文件加入列表；
   - 若列表中仍存在 `.doc`（例如历史配置残留），合并会被硬性阻止，不会生成任何输出文件。
+  - 可点击“检测环境”强制重新探测，并在日志中输出探测结果。
 
 ### 可用性检测与故障排查
 - PowerShell：优先使用 `pwsh`，无则回退到 `powershell`。
 - 若提示不可用，请检查：
   1. 是否为 Windows 系统；
   2. 是否已安装 Microsoft Word 或 WPS 文字；
-  3. PowerShell 执行策略是否允许脚本运行（建议临时使用 `-ExecutionPolicy Bypass`，程序内部已设置）。
+  3. 当前所选模式是否正确（仅 Word / 仅 WPS 会强制失败）；
+  4. PowerShell 执行策略是否允许脚本运行（建议临时使用 `-ExecutionPolicy Bypass`，程序内部已设置）。
 - 若 Word/WPS 正在被其它实例占用或无响应，可能会导致转换失败，请先关闭可能卡住的 Word/WPS 实例后重试。
 - 若出现“COM 探测失败/转换失败”，请优先查看日志中的 stderr 以定位具体原因。
 - 路径包含空格或中文无需额外处理，程序会自动进行 PowerShell 转义。
