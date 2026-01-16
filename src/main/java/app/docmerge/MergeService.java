@@ -18,13 +18,15 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class MergeService {
     private static final String ALT_CHUNK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk";
-    private final WordDocConverter wordDocConverter = new WordDocConverter();
+    private final DocComConverterSelector converterSelector = new DocComConverterSelector();
 
     public void merge(List<FileItem> items,
                       Path outputDir,
@@ -45,18 +47,37 @@ public class MergeService {
         Path outputFile = outputDir.resolve(fileName);
         Path tempFile = outputDir.resolve(fileName + ".tmp");
         Files.deleteIfExists(tempFile);
-        WordDocConverter.ConversionBatch conversionBatch = null;
+        Path tempDir = null;
+        Map<Path, Path> convertedMap = new HashMap<>();
 
         try {
             List<FileItem> docItems = items.stream()
                     .filter(item -> item.getName().toLowerCase(Locale.ROOT).endsWith(".doc"))
                     .toList();
             if (!docItems.isEmpty()) {
-                if (!wordDocConverter.isSupported()) {
-                    throw new IOException("检测到 .doc 文件，但当前环境无法使用 Microsoft Word 进行完美转换。请在安装了 Microsoft Word 的 Windows 上运行。");
+                DocComConverterSelector.ProbeSummary probeSummary = converterSelector.probeAll();
+                DocComConverterSelector.Selection selection = probeSummary.selection();
+                if (selection == null) {
+                    logProbeFailure(logger, probeSummary);
+                    throw new IOException("检测到 .doc 文件，但 Word/WPS COM 不可用，已阻止合并。");
                 }
-                logger.info("开始使用 Microsoft Word 转换 .doc 文件，共 " + docItems.size() + " 个");
-                conversionBatch = wordDocConverter.convertBatchWithTempDir(docItems.stream().map(FileItem::getPath).toList());
+                logger.info("已选择转换引擎：" + selection.status().engineName());
+                tempDir = Files.createTempDirectory("doc-merge-com-");
+                for (int i = 0; i < docItems.size(); i++) {
+                    if (cancelSignal.isCancelled()) {
+                        throw new MergeCancelledException("用户已取消合并");
+                    }
+                    FileItem item = docItems.get(i);
+                    logger.info("开始转换：" + item.getPath());
+                    List<Path> outputs = selection.converter().convertBatch(List.of(item.getPath()), tempDir);
+                    if (outputs.isEmpty()) {
+                        throw new DocComConversionException("转换失败，未生成输出文件",
+                                item.getPath().toString(), "", "未生成输出文件", -1);
+                    }
+                    Path output = outputs.get(0);
+                    convertedMap.put(item.getPath(), output);
+                    logger.info("转换完成：" + item.getPath());
+                }
             }
             try (XWPFDocument document = new XWPFDocument()) {
                 AtomicInteger index = new AtomicInteger();
@@ -70,7 +91,10 @@ public class MergeService {
                     if (lower.endsWith(".docx")) {
                         appendDocx(document, item.getPath(), index.incrementAndGet());
                     } else if (lower.endsWith(".doc")) {
-                        Path converted = findConvertedPath(item.getPath(), conversionBatch);
+                        Path converted = convertedMap.get(item.getPath());
+                        if (converted == null) {
+                            throw new IOException("未找到 .doc 转换结果：" + item.getPath());
+                        }
                         appendDocx(document, converted, index.incrementAndGet());
                     }
                     if (i < items.size() - 1) {
@@ -84,20 +108,18 @@ public class MergeService {
             }
             Files.move(tempFile, outputFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             logger.info("合并完成，输出文件：" + outputFile);
-        } catch (WordDocConverter.WordConversionException e) {
+        } catch (DocComConversionException e) {
             Files.deleteIfExists(tempFile);
-            logger.error("Word 转换失败，文件：" + e.getFailedInput()
+            logger.error("COM 转换失败，文件：" + e.getFailedInput()
                     + "，退出码：" + e.getExitCode()
                     + "\nstdout:\n" + e.getStdout()
                     + "\nstderr:\n" + e.getStderr(), e);
-            throw new IOException("Word 转换失败：" + e.getMessage(), e);
+            throw new IOException("COM 转换失败：" + e.getMessage(), e);
         } catch (IOException e) {
             Files.deleteIfExists(tempFile);
             throw e;
         } finally {
-            if (conversionBatch != null) {
-                wordDocConverter.cleanupConversion(conversionBatch);
-            }
+            cleanupTempDir(tempDir);
         }
     }
 
@@ -116,18 +138,6 @@ public class MergeService {
         }
     }
 
-    private Path findConvertedPath(Path input, WordDocConverter.ConversionBatch batch) throws IOException {
-        if (batch == null || batch.inputs().isEmpty()) {
-            throw new IOException("未找到 .doc 转换结果：" + input);
-        }
-        for (int i = 0; i < batch.inputs().size(); i++) {
-            if (batch.inputs().get(i).equals(input)) {
-                return batch.outputs().get(i);
-            }
-        }
-        throw new IOException("未找到 .doc 转换结果：" + input);
-    }
-
     private String defaultOutputName() {
         return "合并结果_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".docx";
     }
@@ -144,6 +154,44 @@ public class MergeService {
     public static class MergeCancelledException extends IOException {
         public MergeCancelledException(String message) {
             super(message);
+        }
+    }
+
+    private void cleanupTempDir(Path tempDir) {
+        if (tempDir == null) {
+            return;
+        }
+        try {
+            Files.walk(tempDir)
+                    .sorted((a, b) -> b.getNameCount() - a.getNameCount())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException ignored) {
+                            // ignore
+                        }
+                    });
+        } catch (IOException ignored) {
+            // ignore
+        }
+    }
+
+    private void logProbeFailure(UiLogger logger, DocComConverterSelector.ProbeSummary probeSummary) {
+        if (probeSummary == null) {
+            logger.warn("COM 探测失败：未知原因");
+            return;
+        }
+        DocComConverterSelector.EngineStatus word = probeSummary.word();
+        DocComConverterSelector.EngineStatus wps = probeSummary.wps();
+        if (word != null) {
+            logger.warn("Word 探测不可用：" + word.message()
+                    + "，exitCode=" + word.exitCode()
+                    + "\nstderr:\n" + word.stderr());
+        }
+        if (wps != null) {
+            logger.warn("WPS 探测不可用：" + wps.message()
+                    + "，exitCode=" + wps.exitCode()
+                    + "\nstderr:\n" + wps.stderr());
         }
     }
 }

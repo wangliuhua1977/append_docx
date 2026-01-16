@@ -73,11 +73,11 @@ public class MainFrame extends JFrame {
     private final ConfigStore configStore = new ConfigStore();
     private final FileScanner fileScanner = new FileScanner();
     private final UiLogger logger = new UiLogger(logArea);
-    private final WordDocConverter wordDocConverter = new WordDocConverter();
+    private final DocComConverterSelector converterSelector = new DocComConverterSelector();
     private ConfigStore.ConfigData configData;
     private List<FileItem> currentItems = new ArrayList<>();
     private SwingWorker<Boolean, String> worker;
-    private final boolean wordConversionAvailable;
+    private DocComConverterSelector.ProbeSummary probeSummary;
 
     public MainFrame() {
         super("Word文档合并工具-- 黄莉专用版");
@@ -88,8 +88,7 @@ public class MainFrame extends JFrame {
         inputField.setEditable(false);
         outputField.setEditable(false);
         outputNameField.setText(defaultOutputName());
-        wordConversionAvailable = wordDocConverter.isSupported();
-        wordStatusLabel.setText("Word 完美转换：" + (wordConversionAvailable ? "可用" : "不可用"));
+        refreshComProbeStatus();
 
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDragEnabled(true);
@@ -120,8 +119,7 @@ public class MainFrame extends JFrame {
 
         bindActions();
         loadConfig();
-        logger.info("Word 完美转换：" + (wordConversionAvailable ? "可用" : "不可用")
-                + (wordConversionAvailable ? "" : "（需要 Windows + Microsoft Word）"));
+        logComProbeStatus();
     }
 
     private JPanel buildTopPanel() {
@@ -552,9 +550,10 @@ public class MainFrame extends JFrame {
                 toMerge.add(item);
             }
         }
-        if (!wordConversionAvailable && toMerge.stream().anyMatch(this::isDocItem)) {
-            showError("当前环境无法进行 .doc 完美转换，需要 Windows + Microsoft Word。请移除 .doc 文件后重试。");
-            logger.warn("检测到 .doc 文件，但 Word 不可用，已阻止合并");
+        refreshComProbeStatus();
+        if (toMerge.stream().anyMatch(this::isDocItem) && !isDocConversionAvailable()) {
+            showError("当前环境无法进行 .doc 完美转换（Word/WPS COM 不可用）。请移除 .doc 文件后重试。");
+            logProbeFailure();
             return;
         }
         if (toMerge.isEmpty()) {
@@ -684,7 +683,7 @@ public class MainFrame extends JFrame {
     }
 
     private List<FileItem> filterDocFilesIfUnsupported(List<FileItem> items, String action) {
-        if (wordConversionAvailable) {
+        if (isDocConversionAvailable()) {
             return items;
         }
         List<FileItem> filtered = new ArrayList<>();
@@ -697,17 +696,19 @@ public class MainFrame extends JFrame {
             }
         }
         if (!blocked.isEmpty()) {
-            String message = "当前环境无法进行 .doc 完美转换，需要 Windows + Microsoft Word。已阻止加入 .doc 文件（"
+            String message = "当前环境无法进行 .doc 完美转换（Word/WPS COM 不可用）。已阻止加入 .doc 文件（"
                     + action + "）：共 " + blocked.size() + " 个";
             logger.warn(message);
+            logProbeFailure();
             showError(message);
         }
         return filtered;
     }
 
     private boolean isDocBlocked(FileItem item) {
-        if (!wordConversionAvailable && isDocItem(item)) {
-            logger.warn("当前环境无法进行 .doc 完美转换，需要 Windows + Microsoft Word。已跳过：" + item.getPath());
+        if (!isDocConversionAvailable() && isDocItem(item)) {
+            logger.warn("当前环境无法进行 .doc 完美转换（Word/WPS COM 不可用）。已跳过：" + item.getPath());
+            logProbeFailure();
             return true;
         }
         return false;
@@ -715,6 +716,42 @@ public class MainFrame extends JFrame {
 
     private boolean isDocItem(FileItem item) {
         return "doc".equalsIgnoreCase(item.getExtension());
+    }
+
+    private void refreshComProbeStatus() {
+        probeSummary = converterSelector.probeAll();
+        String wordStatus = probeSummary.word().available() ? "可用" : "不可用";
+        String wpsStatus = probeSummary.wps().available() ? "可用" : "不可用";
+        String engine = probeSummary.currentEngineLabel();
+        wordStatusLabel.setText("<html>Word 完美转换：" + wordStatus
+                + "<br>WPS 完美转换：" + wpsStatus
+                + "<br>当前引擎：" + engine + "</html>");
+    }
+
+    private void logComProbeStatus() {
+        if (probeSummary == null) {
+            return;
+        }
+        logger.info("Word 完美转换：" + (probeSummary.word().available() ? "可用" : "不可用"));
+        logger.info("WPS 完美转换：" + (probeSummary.wps().available() ? "可用" : "不可用"));
+        logger.info("当前引擎：" + probeSummary.currentEngineLabel());
+    }
+
+    private boolean isDocConversionAvailable() {
+        return probeSummary != null && probeSummary.anyAvailable();
+    }
+
+    private void logProbeFailure() {
+        if (probeSummary == null) {
+            logger.warn("COM 探测失败：未知原因");
+            return;
+        }
+        DocComConverterSelector.EngineStatus word = probeSummary.word();
+        DocComConverterSelector.EngineStatus wps = probeSummary.wps();
+        logger.warn("Word 探测状态：" + word.message() + "，exitCode=" + word.exitCode()
+                + "\nstderr:\n" + word.stderr());
+        logger.warn("WPS 探测状态：" + wps.message() + "，exitCode=" + wps.exitCode()
+                + "\nstderr:\n" + wps.stderr());
     }
 
     private static class MissingAwareRenderer extends DefaultTableCellRenderer {

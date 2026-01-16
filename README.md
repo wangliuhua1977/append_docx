@@ -29,9 +29,15 @@ java -jar target\doc-merge-app-1.0.0.jar
 ```
 
 ## .doc 完美转换说明（硬性要求）
-- `.doc -> .docx` 必须使用 Microsoft Word COM 引擎，确保最大程度保留布局、样式、表格、图片、页眉页脚与分页。
-- 仅支持 Windows 环境，且需要本机已安装 Microsoft Word。
-- 程序会在启动时检测可用性（PowerShell + Word COM 探测），并在界面显示：`Word 完美转换：可用/不可用`。
+- `.doc -> .docx` 必须使用 COM 自动化引擎，优先级固定：
+  1. Microsoft Word COM（ProgID：`Word.Application`）
+  2. WPS 文字 COM（ProgID：`kwps.application`）
+  3. 若两者都不可用：**硬性失败**（阻止合并，不生成任何输出文件）。
+- 仅支持 Windows 环境，且需要本机已安装 Microsoft Word 或 WPS 文字。
+- 程序会在启动时检测可用性（PowerShell + COM 探测），并在界面显示：
+  - `Word 完美转换：可用/不可用`
+  - `WPS 完美转换：可用/不可用`
+  - `当前引擎：Microsoft Word / WPS 文字 / 无`
 - 当不可用时：
   - 将阻止 `.doc` 文件加入列表；
   - 若列表中仍存在 `.doc`（例如历史配置残留），合并会被硬性阻止，不会生成任何输出文件。
@@ -40,10 +46,11 @@ java -jar target\doc-merge-app-1.0.0.jar
 - PowerShell：优先使用 `pwsh`，无则回退到 `powershell`。
 - 若提示不可用，请检查：
   1. 是否为 Windows 系统；
-  2. 是否已安装 Microsoft Word；
+  2. 是否已安装 Microsoft Word 或 WPS 文字；
   3. PowerShell 执行策略是否允许脚本运行（建议临时使用 `-ExecutionPolicy Bypass`，程序内部已设置）。
-- 若 Word 正在被其它实例占用或无响应，可能会导致转换失败，请先关闭可能卡住的 Word 实例后重试。
-- 路径包含空格无需额外处理，程序会自动进行 PowerShell 转义。
+- 若 Word/WPS 正在被其它实例占用或无响应，可能会导致转换失败，请先关闭可能卡住的 Word/WPS 实例后重试。
+- 若出现“COM 探测失败/转换失败”，请优先查看日志中的 stderr 以定位具体原因。
+- 路径包含空格或中文无需额外处理，程序会自动进行 PowerShell 转义。
 
 ## 使用提示
 1. 点击“选择输入目录”，选择包含 `.docx` / `.doc` 的文件夹后可直接“刷新文件列表”。
