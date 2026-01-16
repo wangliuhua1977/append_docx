@@ -197,10 +197,6 @@ public class MergeService {
                                    Path imagePath,
                                    UiLogger logger,
                                    ProgressStepCallback stepCallback) throws IOException {
-        String title = "【图片】" + imagePath.getFileName();
-        XWPFParagraph titlePara = document.createParagraph();
-        titlePara.createRun().setText(title);
-
         BufferedImage image;
         try {
             image = ImageIO.read(imagePath.toFile());
@@ -227,7 +223,7 @@ public class MergeService {
         imagePara.setAlignment(ParagraphAlignment.CENTER);
         XWPFRun run = imagePara.createRun();
         try (InputStream in = Files.newInputStream(imagePath)) {
-            run.addPicture(in, pictureType(imagePath), imagePath.getFileName().toString(),
+            run.addPicture(in, pictureType(imagePath), "",
                     safeEmu(widthEmu), safeEmu(heightEmu));
         } catch (Exception e) {
             logger.error("插入图片失败：" + imagePath, e);
