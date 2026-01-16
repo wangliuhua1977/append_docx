@@ -18,7 +18,6 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
-import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableColumnModel;
 import java.awt.BorderLayout;
@@ -457,11 +456,7 @@ public class MainFrame extends JFrame {
     }
 
     private void addFiles() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setMultiSelectionEnabled(true);
-        chooser.setFileFilter(new FileNameExtensionFilter(
-                "支持的文件 (*.doc, *.docx, *.pdf, *.png, *.jpg, *.jpeg, *.bmp, *.gif)",
-                "doc", "docx", "pdf", "png", "jpg", "jpeg", "bmp", "gif"));
+        JFileChooser chooser = FileChooserFactory.createAddFilesChooser(logger);
         int result = chooser.showOpenDialog(this);
         if (result == JFileChooser.APPROVE_OPTION) {
             var files = chooser.getSelectedFiles();
@@ -745,6 +740,10 @@ public class MainFrame extends JFrame {
                         progressBar.setString("完成");
                         statusLabel.setText("完成");
                         JOptionPane.showMessageDialog(MainFrame.this, "合并完成", "完成", JOptionPane.INFORMATION_MESSAGE);
+                        Thread opener = new Thread(() -> WindowsExplorerHelper.openAndSelect(outputFile, logger),
+                                "open-explorer");
+                        opener.setDaemon(true);
+                        opener.start();
                     } else if (isCancelled()) {
                         progressBar.setString("已取消");
                         statusLabel.setText("已取消");
