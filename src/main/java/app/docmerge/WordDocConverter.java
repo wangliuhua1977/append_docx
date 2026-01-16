@@ -102,7 +102,10 @@ public class WordDocConverter {
                 }
             }
             return new ConversionBatch(inputs, outputs, tempDir);
-        } catch (WordConversionException | IOException e) {
+        } catch (WordConversionException e) {
+            cleanupConversion(new ConversionBatch(inputs, outputs, tempDir));
+            throw e;
+        } catch (IOException e) {
             cleanupConversion(new ConversionBatch(inputs, outputs, tempDir));
             throw e;
         } finally {
