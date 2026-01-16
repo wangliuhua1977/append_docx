@@ -1,7 +1,5 @@
 package app.docmerge;
 
-import org.apache.poi.hwpf.HWPFDocument;
-import org.apache.poi.hwpf.extractor.WordExtractor;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackagePartName;
@@ -22,12 +20,11 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class MergeService {
     private static final String ALT_CHUNK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk";
-    private final LibreOfficeConverter libreOfficeConverter = new LibreOfficeConverter();
+    private final WordDocConverter wordDocConverter = new WordDocConverter();
 
     public void merge(List<FileItem> items,
                       Path outputDir,
@@ -48,37 +45,59 @@ public class MergeService {
         Path outputFile = outputDir.resolve(fileName);
         Path tempFile = outputDir.resolve(fileName + ".tmp");
         Files.deleteIfExists(tempFile);
+        WordDocConverter.ConversionBatch conversionBatch = null;
 
-        try (XWPFDocument document = new XWPFDocument()) {
-            AtomicInteger index = new AtomicInteger();
-            for (int i = 0; i < items.size(); i++) {
-                if (cancelSignal.isCancelled()) {
-                    throw new MergeCancelledException("用户已取消合并");
+        try {
+            List<FileItem> docItems = items.stream()
+                    .filter(item -> item.getName().toLowerCase(Locale.ROOT).endsWith(".doc"))
+                    .toList();
+            if (!docItems.isEmpty()) {
+                if (!wordDocConverter.isSupported()) {
+                    throw new IOException("检测到 .doc 文件，但当前环境无法使用 Microsoft Word 进行完美转换。请在安装了 Microsoft Word 的 Windows 上运行。");
                 }
-                FileItem item = items.get(i);
-                callback.onProgress(i + 1, items.size(), item.getName());
-                String lower = item.getName().toLowerCase(Locale.ROOT);
-                if (lower.endsWith(".docx")) {
-                    appendDocx(document, item.getPath(), index.incrementAndGet());
-                } else if (lower.endsWith(".doc")) {
-                    boolean handled = convertAndAppendDoc(document, item, index.incrementAndGet(), logger);
-                    if (!handled) {
-                        appendDocFallback(document, item, logger);
+                logger.info("开始使用 Microsoft Word 转换 .doc 文件，共 " + docItems.size() + " 个");
+                conversionBatch = wordDocConverter.convertBatchWithTempDir(docItems.stream().map(FileItem::getPath).toList());
+            }
+            try (XWPFDocument document = new XWPFDocument()) {
+                AtomicInteger index = new AtomicInteger();
+                for (int i = 0; i < items.size(); i++) {
+                    if (cancelSignal.isCancelled()) {
+                        throw new MergeCancelledException("用户已取消合并");
+                    }
+                    FileItem item = items.get(i);
+                    callback.onProgress(i + 1, items.size(), item.getName());
+                    String lower = item.getName().toLowerCase(Locale.ROOT);
+                    if (lower.endsWith(".docx")) {
+                        appendDocx(document, item.getPath(), index.incrementAndGet());
+                    } else if (lower.endsWith(".doc")) {
+                        Path converted = findConvertedPath(item.getPath(), conversionBatch);
+                        appendDocx(document, converted, index.incrementAndGet());
+                    }
+                    if (i < items.size() - 1) {
+                        XWPFParagraph para = document.createParagraph();
+                        para.createRun().addBreak(BreakType.PAGE);
                     }
                 }
-                if (i < items.size() - 1) {
-                    XWPFParagraph para = document.createParagraph();
-                    para.createRun().addBreak(BreakType.PAGE);
+                try (OutputStream out = Files.newOutputStream(tempFile)) {
+                    document.write(out);
                 }
-            }
-            try (OutputStream out = Files.newOutputStream(tempFile)) {
-                document.write(out);
             }
             Files.move(tempFile, outputFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             logger.info("合并完成，输出文件：" + outputFile);
+        } catch (WordDocConverter.WordConversionException e) {
+            Files.deleteIfExists(tempFile);
+            logger.error("Word 转换失败，文件：" + e.getFailedInput()
+                    + "，退出码：" + e.getExitCode()
+                    + "\nstdout:\n" + e.getStdout()
+                    + "\nstderr:\n" + e.getStderr(), e);
+            throw new IOException("Word 转换失败：" + e.getMessage(), e);
         } catch (IOException e) {
             Files.deleteIfExists(tempFile);
             throw e;
+        } finally {
+            if (conversionBatch != null) {
+                wordDocConverter.cleanupConversion(conversionBatch);
+            }
         }
     }
 
@@ -97,40 +116,16 @@ public class MergeService {
         }
     }
 
-    private boolean convertAndAppendDoc(XWPFDocument document, FileItem item, int index, UiLogger logger) {
-        Path tempDir = Path.of(System.getProperty("java.io.tmpdir"), "doc-merge-app", "lo" + System.nanoTime());
-        Optional<Path> converted = libreOfficeConverter.convertToDocx(item.getPath(), tempDir, logger);
-        if (converted.isPresent()) {
-            try {
-                appendDocx(document, converted.get(), index);
-                return true;
-            } catch (IOException e) {
-                logger.error("插入 LibreOffice 转换结果失败：" + item.getName(), e);
-                return false;
-            } finally {
-                try {
-                    Files.deleteIfExists(converted.get());
-                } catch (IOException ignored) {
-                    // ignore
-                }
+    private Path findConvertedPath(Path input, WordDocConverter.ConversionBatch batch) throws IOException {
+        if (batch == null || batch.inputs().isEmpty()) {
+            throw new IOException("未找到 .doc 转换结果：" + input);
+        }
+        for (int i = 0; i < batch.inputs().size(); i++) {
+            if (batch.inputs().get(i).equals(input)) {
+                return batch.outputs().get(i);
             }
         }
-        return false;
-    }
-
-    private void appendDocFallback(XWPFDocument document, FileItem item, UiLogger logger) {
-        logger.warn("未检测到 LibreOffice 或转换失败，使用 .doc 兼容模式：" + item.getName() + "，格式可能无法完全保留");
-        try (InputStream in = Files.newInputStream(item.getPath());
-             HWPFDocument hwpf = new HWPFDocument(in)) {
-            WordExtractor extractor = new WordExtractor(hwpf);
-            String[] paragraphs = extractor.getParagraphText();
-            for (String text : paragraphs) {
-                XWPFParagraph para = document.createParagraph();
-                para.createRun().setText(text.replace("\r", "").replace("\n", ""));
-            }
-        } catch (IOException e) {
-            logger.error("读取 .doc 失败：" + item.getName(), e);
-        }
+        throw new IOException("未找到 .doc 转换结果：" + input);
     }
 
     private String defaultOutputName() {
