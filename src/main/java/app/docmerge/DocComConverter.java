@@ -10,4 +10,16 @@ public interface DocComConverter {
     boolean isAvailable();
 
     List<Path> convertBatch(List<Path> docFiles, Path tempDir) throws IOException, DocComConversionException;
+
+    default boolean supportsPdfConversion() {
+        return false;
+    }
+
+    default Path convertPdfToDocx(Path pdfFile, Path tempDir) throws IOException, DocComConversionException {
+        throw new DocComConversionException("当前引擎不支持 PDF 转 DOCX",
+                pdfFile == null ? "" : pdfFile.toString(),
+                "",
+                "当前引擎不支持 PDF 转 DOCX",
+                -1);
+    }
 }

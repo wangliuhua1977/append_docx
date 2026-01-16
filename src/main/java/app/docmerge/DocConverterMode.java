@@ -15,6 +15,11 @@ public enum DocConverterMode {
         return label;
     }
 
+    @Override
+    public String toString() {
+        return label;
+    }
+
     public static DocConverterMode fromConfig(String value) {
         if (value == null || value.isBlank()) {
             return AUTO;

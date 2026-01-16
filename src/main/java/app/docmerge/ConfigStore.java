@@ -55,6 +55,9 @@ public class ConfigStore {
         private String lastOutputDir;
         private String lastOutputFileName;
         private String docConverterMode = DocConverterMode.AUTO.name();
+        private Integer windowWidth;
+        private Integer windowHeight;
+        private Integer dividerLocation;
         private Map<String, List<String>> perDirOrder = new HashMap<>();
         private List<FileEntry> lastFileList = new ArrayList<>();
 
@@ -88,6 +91,30 @@ public class ConfigStore {
 
         public void setDocConverterMode(String docConverterMode) {
             this.docConverterMode = docConverterMode;
+        }
+
+        public Integer getWindowWidth() {
+            return windowWidth;
+        }
+
+        public void setWindowWidth(Integer windowWidth) {
+            this.windowWidth = windowWidth;
+        }
+
+        public Integer getWindowHeight() {
+            return windowHeight;
+        }
+
+        public void setWindowHeight(Integer windowHeight) {
+            this.windowHeight = windowHeight;
+        }
+
+        public Integer getDividerLocation() {
+            return dividerLocation;
+        }
+
+        public void setDividerLocation(Integer dividerLocation) {
+            this.dividerLocation = dividerLocation;
         }
 
         public Map<String, List<String>> getPerDirOrder() {
