@@ -28,13 +28,22 @@ mvn -q -DskipTests package
 java -jar target\doc-merge-app-1.0.0.jar
 ```
 
-## .doc 处理策略说明
-- 优先使用 LibreOffice 进行 `.doc -> .docx` 转换，然后以 altChunk 的方式嵌入，尽量保留原始格式。
-- 自动检测 LibreOffice：
-  - Windows 下优先从常见安装路径与 `PATH` 中查找 `soffice.exe`。
-- 若未检测到 LibreOffice 或转换失败：
-  - 自动回退到 Apache POI 的 HWPF 兼容模式，提取文本段落并写入输出文档。
-  - 日志会以中文提示“兼容模式，格式可能无法完全保留”。
+## .doc 完美转换说明（硬性要求）
+- `.doc -> .docx` 必须使用 Microsoft Word COM 引擎，确保最大程度保留布局、样式、表格、图片、页眉页脚与分页。
+- 仅支持 Windows 环境，且需要本机已安装 Microsoft Word。
+- 程序会在启动时检测可用性（PowerShell + Word COM 探测），并在界面显示：`Word 完美转换：可用/不可用`。
+- 当不可用时：
+  - 将阻止 `.doc` 文件加入列表；
+  - 若列表中仍存在 `.doc`（例如历史配置残留），合并会被硬性阻止，不会生成任何输出文件。
+
+### 可用性检测与故障排查
+- PowerShell：优先使用 `pwsh`，无则回退到 `powershell`。
+- 若提示不可用，请检查：
+  1. 是否为 Windows 系统；
+  2. 是否已安装 Microsoft Word；
+  3. PowerShell 执行策略是否允许脚本运行（建议临时使用 `-ExecutionPolicy Bypass`，程序内部已设置）。
+- 若 Word 正在被其它实例占用或无响应，可能会导致转换失败，请先关闭可能卡住的 Word 实例后重试。
+- 路径包含空格无需额外处理，程序会自动进行 PowerShell 转义。
 
 ## 使用提示
 1. 点击“选择输入目录”，选择包含 `.docx` / `.doc` 的文件夹后可直接“刷新文件列表”。
