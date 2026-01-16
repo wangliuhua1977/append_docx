@@ -1,33 +1,38 @@
 package app.docmerge;
 
 import javax.swing.BorderFactory;
-import javax.swing.ButtonGroup;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JProgressBar;
-import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
+import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableColumnModel;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.Image;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -46,13 +51,14 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 public class MainFrame extends JFrame {
+    private static final String APP_TITLE = "超级word拼接- 飞天专版";
     private static final Pattern ILLEGAL_NAME = Pattern.compile("[\\\\/:*?\"<>|]");
 
     private final JTextField inputField = new JTextField();
     private final JTextField outputField = new JTextField();
     private final JTextField outputNameField = new JTextField();
-    private final JButton selectInputButton = new JButton("选择输入目录");
-    private final JButton refreshButton = new JButton("刷新文件列表");
+    private final JButton selectInputButton = new JButton("选择目录");
+    private final JButton refreshButton = new JButton("扫描");
     private final JButton addFilesButton = new JButton("添加文件...");
     private final JButton addDirButton = new JButton("添加目录...");
     private final JButton removeSelectedButton = new JButton("移除选中");
@@ -60,23 +66,34 @@ public class MainFrame extends JFrame {
     private final JButton selectAllButton = new JButton("全选");
     private final JButton selectNoneButton = new JButton("全不选");
     private final JButton invertSelectButton = new JButton("反选");
-    private final JButton selectOutputButton = new JButton("选择输出目录");
+    private final JButton selectOutputButton = new JButton("选择输出位置");
     private final JButton mergeButton = new JButton("开始合并");
     private final JButton cancelButton = new JButton("取消");
-    private final JRadioButton autoModeButton = new JRadioButton("自动（Word优先）");
-    private final JRadioButton wordOnlyButton = new JRadioButton("仅 Word");
-    private final JRadioButton wpsOnlyButton = new JRadioButton("仅 WPS");
+    private final JComboBox<DocConverterMode> modeCombo = new JComboBox<>(DocConverterMode.values());
     private final JButton probeEnvButton = new JButton("检测环境");
     private final JLabel wordStatusLabel = new JLabel();
     private final JLabel wpsStatusLabel = new JLabel();
     private final JLabel modeStatusLabel = new JLabel();
-    private final JButton clearLogButton = new JButton("清空");
-    private final JButton copyLogButton = new JButton("复制全部");
+    private final JButton clearLogButton = new JButton("清空日志");
+    private final JButton copyLogButton = new JButton("复制日志");
     private final JProgressBar progressBar = new JProgressBar();
     private final JLabel statusLabel = new JLabel("准备就绪");
     private final JTextArea logArea = new JTextArea();
     private final FileTableModel tableModel = new FileTableModel();
     private final JTable table = new JTable(tableModel);
+
+    private final PreviewService previewService = new PreviewService();
+    private SwingWorker<PreviewService.PreviewResult, Void> previewWorker;
+    private Path previewTarget;
+
+    private final JPanel previewCardPanel = new JPanel(new CardLayout());
+    private final JLabel imagePreviewLabel = new JLabel();
+    private final JLabel imagePreviewMeta = new JLabel();
+    private final JTextArea textPreviewArea = new JTextArea();
+    private final JLabel textPreviewMeta = new JLabel();
+    private final JLabel emptyPreviewLabel = new JLabel("请选择文件以预览", SwingConstants.CENTER);
+
+    private final JSplitPane mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
 
     private final ConfigStore configStore = new ConfigStore();
     private final FileScanner fileScanner = new FileScanner();
@@ -89,9 +106,9 @@ public class MainFrame extends JFrame {
     private DocComConverterResolver.Resolution probeResolution;
 
     public MainFrame() {
-        super("Word文档合并工具-- 黄莉专用版");
+        super(APP_TITLE);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(1200, 760);
+        setSize(1200, 800);
         setLocationRelativeTo(null);
 
         inputField.setEditable(false);
@@ -107,21 +124,24 @@ public class MainFrame extends JFrame {
         TableColumnModel columnModel = table.getColumnModel();
         columnModel.getColumn(0).setPreferredWidth(60);
         columnModel.getColumn(1).setPreferredWidth(60);
-        columnModel.getColumn(2).setPreferredWidth(320);
+        columnModel.getColumn(2).setPreferredWidth(300);
         columnModel.getColumn(3).setPreferredWidth(80);
         columnModel.getColumn(4).setPreferredWidth(80);
         columnModel.getColumn(5).setPreferredWidth(100);
         columnModel.getColumn(6).setPreferredWidth(160);
-        columnModel.getColumn(7).setPreferredWidth(240);
+        columnModel.getColumn(7).setPreferredWidth(220);
         columnModel.getColumn(8).setPreferredWidth(100);
 
         logArea.setEditable(false);
         logArea.setLineWrap(true);
 
+        buildPreviewPanel();
+
         JPanel topPanel = buildTopPanel();
         JPanel centerPanel = buildCenterPanel();
         JPanel bottomPanel = buildBottomPanel();
 
+        setLayout(new BorderLayout());
         add(topPanel, BorderLayout.NORTH);
         add(centerPanel, BorderLayout.CENTER);
         add(bottomPanel, BorderLayout.SOUTH);
@@ -130,6 +150,13 @@ public class MainFrame extends JFrame {
         loadConfig();
         refreshComProbeStatus(true);
         logComProbeStatus();
+
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                persistState();
+            }
+        });
     }
 
     private JPanel buildTopPanel() {
@@ -138,36 +165,21 @@ public class MainFrame extends JFrame {
 
         JPanel inputPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         inputPanel.add(selectInputButton);
-        inputField.setPreferredSize(new Dimension(550, 28));
+        inputField.setPreferredSize(new Dimension(520, 28));
         inputPanel.add(inputField);
         inputPanel.add(refreshButton);
 
-        JPanel listActions = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        listActions.add(addFilesButton);
-        listActions.add(addDirButton);
-        listActions.add(removeSelectedButton);
-        listActions.add(clearListButton);
-        listActions.add(selectAllButton);
-        listActions.add(selectNoneButton);
-        listActions.add(invertSelectButton);
-
         JPanel outputPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         outputPanel.add(selectOutputButton);
-        outputField.setPreferredSize(new Dimension(550, 28));
+        outputField.setPreferredSize(new Dimension(520, 28));
         outputPanel.add(outputField);
         outputPanel.add(new JLabel("输出文件名"));
-        outputNameField.setPreferredSize(new Dimension(240, 28));
+        outputNameField.setPreferredSize(new Dimension(220, 28));
         outputPanel.add(outputNameField);
 
         JPanel docEnginePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        docEnginePanel.add(new JLabel("DOC 转换引擎"));
-        ButtonGroup group = new ButtonGroup();
-        group.add(autoModeButton);
-        group.add(wordOnlyButton);
-        group.add(wpsOnlyButton);
-        docEnginePanel.add(autoModeButton);
-        docEnginePanel.add(wordOnlyButton);
-        docEnginePanel.add(wpsOnlyButton);
+        docEnginePanel.add(new JLabel("转换引擎"));
+        docEnginePanel.add(modeCombo);
         docEnginePanel.add(probeEnvButton);
 
         JPanel statusPanel = new JPanel();
@@ -178,7 +190,6 @@ public class MainFrame extends JFrame {
         docEnginePanel.add(statusPanel);
 
         panel.add(inputPanel);
-        panel.add(listActions);
         panel.add(outputPanel);
         panel.add(docEnginePanel);
         return panel;
@@ -186,25 +197,75 @@ public class MainFrame extends JFrame {
 
     private JPanel buildCenterPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        JScrollPane tableScroll = new JScrollPane(table);
-        panel.add(tableScroll, BorderLayout.CENTER);
+
+        JPanel leftPanel = new JPanel(new BorderLayout());
+        leftPanel.add(buildListToolbar(), BorderLayout.NORTH);
+        leftPanel.add(new JScrollPane(table), BorderLayout.CENTER);
+
+        mainSplitPane.setLeftComponent(leftPanel);
+        mainSplitPane.setRightComponent(previewCardPanel);
+        mainSplitPane.setResizeWeight(0.65);
+        mainSplitPane.setDividerLocation(720);
+
+        panel.add(mainSplitPane, BorderLayout.CENTER);
         return panel;
+    }
+
+    private JPanel buildListToolbar() {
+        JPanel listActions = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        listActions.add(addFilesButton);
+        listActions.add(addDirButton);
+        listActions.add(removeSelectedButton);
+        listActions.add(clearListButton);
+        listActions.add(selectAllButton);
+        listActions.add(selectNoneButton);
+        listActions.add(invertSelectButton);
+        return listActions;
+    }
+
+    private void buildPreviewPanel() {
+        JPanel imageCard = new JPanel(new BorderLayout());
+        imagePreviewLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        imagePreviewLabel.setVerticalAlignment(SwingConstants.CENTER);
+        imagePreviewMeta.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        imageCard.add(imagePreviewLabel, BorderLayout.CENTER);
+        imageCard.add(imagePreviewMeta, BorderLayout.SOUTH);
+
+        JPanel textCard = new JPanel(new BorderLayout());
+        textPreviewMeta.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        textPreviewArea.setEditable(false);
+        textPreviewArea.setLineWrap(true);
+        textCard.add(textPreviewMeta, BorderLayout.NORTH);
+        textCard.add(new JScrollPane(textPreviewArea), BorderLayout.CENTER);
+
+        JPanel emptyCard = new JPanel(new BorderLayout());
+        emptyCard.add(emptyPreviewLabel, BorderLayout.CENTER);
+
+        previewCardPanel.setBorder(BorderFactory.createTitledBorder("预览区域"));
+        previewCardPanel.add(emptyCard, "EMPTY");
+        previewCardPanel.add(imageCard, "IMAGE");
+        previewCardPanel.add(textCard, "TEXT");
+        showPreviewEmpty();
     }
 
     private JPanel buildBottomPanel() {
         JPanel panel = new JPanel(new BorderLayout());
 
+        JPanel progressPanel = new JPanel(new BorderLayout());
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT));
         actions.add(mergeButton);
         actions.add(cancelButton);
         cancelButton.setEnabled(false);
 
-        JPanel progressPanel = new JPanel();
-        progressPanel.setLayout(new javax.swing.BoxLayout(progressPanel, javax.swing.BoxLayout.Y_AXIS));
+        JPanel progressInfo = new JPanel();
+        progressInfo.setLayout(new javax.swing.BoxLayout(progressInfo, javax.swing.BoxLayout.Y_AXIS));
         progressBar.setStringPainted(true);
         progressBar.setString("等待开始");
-        progressPanel.add(progressBar);
-        progressPanel.add(statusLabel);
+        progressInfo.add(progressBar);
+        progressInfo.add(statusLabel);
+
+        progressPanel.add(actions, BorderLayout.WEST);
+        progressPanel.add(progressInfo, BorderLayout.CENTER);
 
         JPanel logPanel = new JPanel(new BorderLayout());
         logPanel.setBorder(BorderFactory.createTitledBorder("日志"));
@@ -214,11 +275,10 @@ public class MainFrame extends JFrame {
         logActions.add(clearLogButton);
         logActions.add(copyLogButton);
         logPanel.add(logActions, BorderLayout.SOUTH);
-        logPanel.setPreferredSize(new Dimension(800, 220));
+        logPanel.setPreferredSize(new Dimension(900, 240));
 
-        panel.add(actions, BorderLayout.NORTH);
-        panel.add(progressPanel, BorderLayout.CENTER);
-        panel.add(logPanel, BorderLayout.SOUTH);
+        panel.add(progressPanel, BorderLayout.NORTH);
+        panel.add(logPanel, BorderLayout.CENTER);
         return panel;
     }
 
@@ -241,13 +301,16 @@ public class MainFrame extends JFrame {
             refreshComProbeStatus(true);
             logComProbeStatus();
         });
-        autoModeButton.addActionListener(event -> handleModeChange());
-        wordOnlyButton.addActionListener(event -> handleModeChange());
-        wpsOnlyButton.addActionListener(event -> handleModeChange());
+        modeCombo.addActionListener(event -> handleModeChange());
         outputNameField.addFocusListener(new FocusAdapter() {
             @Override
             public void focusLost(FocusEvent e) {
                 persistState();
+            }
+        });
+        table.getSelectionModel().addListSelectionListener(event -> {
+            if (!event.getValueIsAdjusting()) {
+                loadPreviewForSelection();
             }
         });
     }
@@ -265,6 +328,12 @@ public class MainFrame extends JFrame {
         }
         DocConverterMode mode = DocConverterMode.fromConfig(configData.getDocConverterMode());
         applyModeSelection(mode);
+        if (configData.getWindowWidth() != null && configData.getWindowHeight() != null) {
+            setSize(configData.getWindowWidth(), configData.getWindowHeight());
+        }
+        if (configData.getDividerLocation() != null) {
+            mainSplitPane.setDividerLocation(configData.getDividerLocation());
+        }
         if (!configData.getLastFileList().isEmpty()) {
             currentItems = loadFileList(configData.getLastFileList());
             refreshTable();
@@ -501,6 +570,7 @@ public class MainFrame extends JFrame {
         currentItems = tableModel.getItems();
         persistState();
         logger.info("列表已清空");
+        showPreviewEmpty();
     }
 
     private void selectAll() {
@@ -519,10 +589,16 @@ public class MainFrame extends JFrame {
     }
 
     private void persistState() {
+        if (configData == null) {
+            return;
+        }
         configData.setLastOutputFileName(outputNameField.getText().trim());
         configData.setLastFileList(serializeItems());
         configData.setPerDirOrder(buildPerDirOrder());
         configData.setDocConverterMode(getSelectedMode().name());
+        configData.setWindowWidth(getWidth());
+        configData.setWindowHeight(getHeight());
+        configData.setDividerLocation(mainSplitPane.getDividerLocation());
         configStore.save(configData);
     }
 
@@ -591,14 +667,26 @@ public class MainFrame extends JFrame {
             }
         }
         refreshComProbeStatus(false);
-        if (toMerge.stream().anyMatch(this::isDocItem) && !isDocConversionAvailable()) {
+        boolean hasDoc = toMerge.stream().anyMatch(this::isDocItem);
+        boolean hasPdf = toMerge.stream().anyMatch(item -> item.getFileType() == FileItem.FileType.PDF);
+        if ((hasDoc || hasPdf) && !isDocConversionAvailable()) {
             DocComConverterResolver.Resolution resolution = resolveProbe(false);
             String message = resolution.errorMessage() == null
-                    ? "当前环境无法进行 .doc 完美转换。请移除 .doc 文件后重试。"
+                    ? "当前环境无法进行 DOC/PDF 完美转换。请移除相关文件后重试。"
                     : resolution.errorMessage();
             showError(message);
             logProbeFailure(resolution);
             return;
+        }
+        if (hasPdf) {
+            DocComConverterResolver.Resolution resolution = resolveProbe(false);
+            DocComConverterSelector.Selection selection = resolution.selection();
+            if (selection != null && !selection.converter().supportsPdfConversion()) {
+                String message = "当前引擎不支持 PDF 转 DOCX：" + selection.status().engineName();
+                showError(message);
+                logger.warn(message);
+                return;
+            }
         }
         if (toMerge.isEmpty()) {
             showError("未选择任何待合并文件");
@@ -819,27 +907,108 @@ public class MainFrame extends JFrame {
     }
 
     private DocConverterMode getSelectedMode() {
-        if (wordOnlyButton.isSelected()) {
-            return DocConverterMode.WORD_ONLY;
-        }
-        if (wpsOnlyButton.isSelected()) {
-            return DocConverterMode.WPS_ONLY;
-        }
-        return DocConverterMode.AUTO;
+        DocConverterMode selected = (DocConverterMode) modeCombo.getSelectedItem();
+        return selected == null ? DocConverterMode.AUTO : selected;
     }
 
     private void applyModeSelection(DocConverterMode mode) {
-        switch (mode) {
-            case WORD_ONLY -> wordOnlyButton.setSelected(true);
-            case WPS_ONLY -> wpsOnlyButton.setSelected(true);
-            default -> autoModeButton.setSelected(true);
-        }
+        modeCombo.setSelectedItem(mode);
     }
 
     private void handleModeChange() {
         configData.setDocConverterMode(getSelectedMode().name());
         persistState();
         refreshComProbeStatus(false);
+    }
+
+    private void loadPreviewForSelection() {
+        int row = table.getSelectedRow();
+        if (row < 0 || row >= tableModel.getRowCount()) {
+            showPreviewEmpty();
+            return;
+        }
+        FileItem item = tableModel.getItemAt(row);
+        startPreviewWorker(item);
+    }
+
+    private void startPreviewWorker(FileItem item) {
+        if (previewWorker != null && !previewWorker.isDone()) {
+            previewWorker.cancel(true);
+        }
+        previewTarget = item.getPath();
+        showPreviewLoading(item);
+        previewWorker = new SwingWorker<>() {
+            @Override
+            protected PreviewService.PreviewResult doInBackground() {
+                return previewService.loadPreview(item, getSelectedMode(), converterResolver, logger);
+            }
+
+            @Override
+            protected void done() {
+                if (isCancelled()) {
+                    return;
+                }
+                try {
+                    PreviewService.PreviewResult result = get();
+                    if (previewTarget != null && item.getPath() != null
+                            && !previewTarget.equals(item.getPath())) {
+                        return;
+                    }
+                    showPreviewResult(result);
+                } catch (Exception e) {
+                    showPreviewError("预览失败：" + e.getMessage());
+                }
+            }
+        };
+        previewWorker.execute();
+    }
+
+    private void showPreviewLoading(FileItem item) {
+        String title = item == null ? "" : item.getName();
+        textPreviewMeta.setText(toHtml("正在加载预览：" + title));
+        textPreviewArea.setText("正在加载预览，请稍候...");
+        showPreviewCard("TEXT");
+    }
+
+    private void showPreviewResult(PreviewService.PreviewResult result) {
+        if (result == null) {
+            showPreviewEmpty();
+            return;
+        }
+        if (result.type() == PreviewService.PreviewType.IMAGE && result.image() != null) {
+            Image icon = result.image();
+            imagePreviewLabel.setIcon(new javax.swing.ImageIcon(icon));
+            imagePreviewLabel.setText(null);
+            imagePreviewMeta.setText(toHtml(result.meta()));
+            showPreviewCard("IMAGE");
+            return;
+        }
+        textPreviewMeta.setText(toHtml(result.meta()));
+        textPreviewArea.setText(result.text() == null ? "" : result.text());
+        textPreviewArea.setCaretPosition(0);
+        showPreviewCard("TEXT");
+    }
+
+    private void showPreviewError(String message) {
+        textPreviewMeta.setText(toHtml("预览错误"));
+        textPreviewArea.setText(message);
+        showPreviewCard("TEXT");
+    }
+
+    private void showPreviewEmpty() {
+        showPreviewCard("EMPTY");
+    }
+
+    private void showPreviewCard(String name) {
+        CardLayout layout = (CardLayout) previewCardPanel.getLayout();
+        layout.show(previewCardPanel, name);
+    }
+
+    private String toHtml(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        return "<html>" + text.replace("\n", "<br>") + "</html>";
     }
 
     private record ProgressStatus(int current, int total, String name) {
