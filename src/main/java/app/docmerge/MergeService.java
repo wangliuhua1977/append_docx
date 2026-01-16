@@ -5,14 +5,27 @@ import org.apache.poi.openxml4j.opc.PackagePart;
 import org.apache.poi.openxml4j.opc.PackagePartName;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.openxml4j.opc.TargetMode;
+import org.apache.poi.util.Units;
 import org.apache.poi.xwpf.usermodel.BreakType;
+import org.apache.poi.xwpf.usermodel.ParagraphAlignment;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFRun;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTAltChunk;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageMar;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageSz;
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTSectPr;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -26,6 +39,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class MergeService {
     private static final String ALT_CHUNK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk";
+    private static final int PDF_DPI = 150;
+    private static final int IMAGE_DPI = 96;
+    private static final long TWIP_TO_EMU = 635L;
+    private static final int PDF_LOG_INTERVAL = 5;
     public void merge(List<FileItem> items,
                       Path outputDir,
                       String outputName,
@@ -49,10 +66,13 @@ public class MergeService {
         Files.deleteIfExists(tempFile);
         Path tempDir = null;
         Map<Path, Path> convertedMap = new HashMap<>();
+        Map<Path, Integer> pdfPageCount = new HashMap<>();
+        int totalUnits = computeTotalUnits(items, pdfPageCount, logger);
+        long startTime = System.currentTimeMillis();
 
         try {
             List<FileItem> docItems = items.stream()
-                    .filter(item -> item.getName().toLowerCase(Locale.ROOT).endsWith(".doc"))
+                    .filter(item -> item.getFileType() == FileItem.FileType.DOC)
                     .toList();
             if (!docItems.isEmpty()) {
                 logger.info("DOC 转换模式：" + mode.getLabel());
@@ -86,25 +106,39 @@ public class MergeService {
             }
             try (XWPFDocument document = new XWPFDocument()) {
                 AtomicInteger index = new AtomicInteger();
+                ProgressTracker tracker = new ProgressTracker(totalUnits, callback);
                 for (int i = 0; i < items.size(); i++) {
                     if (cancelSignal.isCancelled()) {
                         throw new MergeCancelledException("用户已取消合并");
                     }
                     FileItem item = items.get(i);
-                    callback.onProgress(i + 1, items.size(), item.getName());
-                    String lower = item.getName().toLowerCase(Locale.ROOT);
-                    if (lower.endsWith(".docx")) {
-                        appendDocx(document, item.getPath(), index.incrementAndGet());
-                    } else if (lower.endsWith(".doc")) {
-                        Path converted = convertedMap.get(item.getPath());
-                        if (converted == null) {
-                            throw new IOException("未找到 .doc 转换结果：" + item.getPath());
+                    logger.info("开始处理：" + item.getName() + "，类型：" + item.getFileType().getLabel());
+                    switch (item.getFileType()) {
+                        case DOCX -> {
+                            appendDocx(document, item.getPath(), index.incrementAndGet());
+                            tracker.step(item.getName());
+                            if (i < items.size() - 1) {
+                                addPageBreak(document);
+                            }
                         }
-                        appendDocx(document, converted, index.incrementAndGet());
-                    }
-                    if (i < items.size() - 1) {
-                        XWPFParagraph para = document.createParagraph();
-                        para.createRun().addBreak(BreakType.PAGE);
+                        case DOC -> {
+                            Path converted = convertedMap.get(item.getPath());
+                            if (converted == null) {
+                                throw new IOException("未找到 .doc 转换结果：" + item.getPath());
+                            }
+                            appendDocx(document, converted, index.incrementAndGet());
+                            tracker.step(item.getName());
+                            if (i < items.size() - 1) {
+                                addPageBreak(document);
+                            }
+                        }
+                        case IMAGE -> {
+                            appendImageToDocx(document, item.getPath(), logger, tracker::step);
+                        }
+                        case PDF -> {
+                            Integer pages = pdfPageCount.get(item.getPath());
+                            appendPdfToDocx(document, item.getPath(), pages == null ? 0 : pages, logger, tracker::step, cancelSignal);
+                        }
                     }
                 }
                 try (OutputStream out = Files.newOutputStream(tempFile)) {
@@ -112,7 +146,8 @@ public class MergeService {
                 }
             }
             Files.move(tempFile, outputFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            logger.info("合并完成，输出文件：" + outputFile);
+            long cost = System.currentTimeMillis() - startTime;
+            logger.info("合并完成，耗时 " + cost + " ms，输出文件：" + outputFile);
         } catch (DocComConversionException e) {
             Files.deleteIfExists(tempFile);
             logger.error("COM 转换失败，文件：" + e.getFailedInput()
@@ -125,6 +160,34 @@ public class MergeService {
             throw e;
         } finally {
             cleanupTempDir(tempDir);
+        }
+    }
+
+    private int computeTotalUnits(List<FileItem> items, Map<Path, Integer> pdfPageCount, UiLogger logger) throws IOException {
+        int total = 0;
+        for (FileItem item : items) {
+            switch (item.getFileType()) {
+                case DOC, DOCX, IMAGE -> total += 1;
+                case PDF -> {
+                    int pages = countPdfPages(item.getPath(), logger);
+                    if (pages <= 0) {
+                        throw new IOException("PDF 无有效页面：" + item.getPath());
+                    }
+                    pdfPageCount.put(item.getPath(), pages);
+                    total += pages;
+                }
+            }
+        }
+        return total;
+    }
+
+    private int countPdfPages(Path pdfPath, UiLogger logger) throws IOException {
+        logger.info("读取 PDF 页数：" + pdfPath.getFileName());
+        try (PDDocument doc = Loader.loadPDF(pdfPath.toFile())) {
+            return doc.getNumberOfPages();
+        } catch (IOException e) {
+            logger.error("读取 PDF 页数失败：" + pdfPath, e);
+            throw e;
         }
     }
 
@@ -143,6 +206,177 @@ public class MergeService {
         }
     }
 
+    private void appendImageToDocx(XWPFDocument document,
+                                   Path imagePath,
+                                   UiLogger logger,
+                                   ProgressStepCallback stepCallback) throws IOException {
+        String title = "【图片】" + imagePath.getFileName();
+        XWPFParagraph titlePara = document.createParagraph();
+        titlePara.createRun().setText(title);
+
+        BufferedImage image;
+        try {
+            image = ImageIO.read(imagePath.toFile());
+        } catch (IOException e) {
+            logger.error("读取图片失败：" + imagePath, e);
+            throw e;
+        }
+        if (image == null) {
+            IOException e = new IOException("无法识别的图片格式：" + imagePath);
+            logger.error("读取图片失败：" + imagePath, e);
+            throw e;
+        }
+
+        long widthEmu = toEmuFromPixels(image.getWidth(), IMAGE_DPI);
+        long heightEmu = toEmuFromPixels(image.getHeight(), IMAGE_DPI);
+        long maxWidthEmu = resolveUsablePageWidthEmu(document);
+        if (widthEmu > maxWidthEmu) {
+            double scale = (double) maxWidthEmu / (double) widthEmu;
+            widthEmu = Math.round(widthEmu * scale);
+            heightEmu = Math.round(heightEmu * scale);
+        }
+
+        XWPFParagraph imagePara = document.createParagraph();
+        imagePara.setAlignment(ParagraphAlignment.CENTER);
+        XWPFRun run = imagePara.createRun();
+        try (InputStream in = Files.newInputStream(imagePath)) {
+            run.addPicture(in, pictureType(imagePath), imagePath.getFileName().toString(),
+                    safeEmu(widthEmu), safeEmu(heightEmu));
+        } catch (Exception e) {
+            logger.error("插入图片失败：" + imagePath, e);
+            throw new IOException("插入图片失败：" + imagePath.getFileName(), e);
+        }
+        addPageBreak(document);
+        stepCallback.step(imagePath.getFileName().toString());
+        logger.info("图片插入完成：" + imagePath.getFileName());
+    }
+
+    private void appendPdfToDocx(XWPFDocument document,
+                                 Path pdfPath,
+                                 int pageCount,
+                                 UiLogger logger,
+                                 ProgressStepCallback stepCallback,
+                                 CancelSignal cancelSignal) throws IOException {
+        String fileName = pdfPath.getFileName().toString();
+        XWPFParagraph titlePara = document.createParagraph();
+        titlePara.createRun().setText("【PDF】" + fileName);
+        logger.info("开始渲染 PDF：" + fileName + "，页数=" + pageCount);
+
+        try (PDDocument pdfDocument = Loader.loadPDF(pdfPath.toFile())) {
+            PDFRenderer renderer = new PDFRenderer(pdfDocument);
+            int totalPages = pdfDocument.getNumberOfPages();
+            if (pageCount > 0 && pageCount != totalPages) {
+                logger.warn("PDF 页数发生变化：" + fileName + "，预估=" + pageCount + "，实际=" + totalPages);
+            }
+            for (int i = 0; i < totalPages; i++) {
+                if (cancelSignal.isCancelled()) {
+                    throw new MergeCancelledException("用户已取消合并");
+                }
+                BufferedImage image = renderer.renderImageWithDPI(i, PDF_DPI);
+                long widthEmu = toEmuFromPixels(image.getWidth(), PDF_DPI);
+                long heightEmu = toEmuFromPixels(image.getHeight(), PDF_DPI);
+                long maxWidthEmu = resolveUsablePageWidthEmu(document);
+                if (widthEmu > maxWidthEmu) {
+                    double scale = (double) maxWidthEmu / (double) widthEmu;
+                    widthEmu = Math.round(widthEmu * scale);
+                    heightEmu = Math.round(heightEmu * scale);
+                }
+                XWPFParagraph imagePara = document.createParagraph();
+                imagePara.setAlignment(ParagraphAlignment.CENTER);
+                XWPFRun run = imagePara.createRun();
+                try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                    ImageIO.write(image, "png", out);
+                    try (InputStream in = new ByteArrayInputStream(out.toByteArray())) {
+                        try {
+                            run.addPicture(in, XWPFDocument.PICTURE_TYPE_PNG, fileName + "-page-" + (i + 1) + ".png",
+                                    safeEmu(widthEmu), safeEmu(heightEmu));
+                        } catch (Exception e) {
+                            logger.error("插入 PDF 页面失败：" + fileName + " 第" + (i + 1) + "页", e);
+                            throw new IOException("插入 PDF 页面失败：" + fileName + " 第" + (i + 1) + "页", e);
+                        }
+                    }
+                }
+                addPageBreak(document);
+                String progressName = fileName + " 第" + (i + 1) + "/" + totalPages + "页";
+                stepCallback.step(progressName);
+                if ((i + 1) % PDF_LOG_INTERVAL == 0 || i == totalPages - 1) {
+                    logger.info("PDF 页面插入进度：" + fileName + " 第" + (i + 1) + "/" + totalPages + "页");
+                }
+            }
+            logger.info("PDF 插入完成：" + fileName);
+        } catch (IOException e) {
+            logger.error("PDF 渲染失败：" + pdfPath, e);
+            throw e;
+        }
+    }
+
+    private void addPageBreak(XWPFDocument document) {
+        XWPFParagraph para = document.createParagraph();
+        para.createRun().addBreak(BreakType.PAGE);
+    }
+
+    private int pictureType(Path imagePath) throws IOException {
+        String lower = imagePath.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".png")) {
+            return XWPFDocument.PICTURE_TYPE_PNG;
+        }
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+            return XWPFDocument.PICTURE_TYPE_JPEG;
+        }
+        if (lower.endsWith(".bmp")) {
+            return XWPFDocument.PICTURE_TYPE_BMP;
+        }
+        if (lower.endsWith(".gif")) {
+            return XWPFDocument.PICTURE_TYPE_GIF;
+        }
+        throw new IOException("不支持的图片格式：" + imagePath.getFileName());
+    }
+
+    private long resolveUsablePageWidthEmu(XWPFDocument document) {
+        CTSectPr sectPr = document.getDocument().getBody().getSectPr();
+        long pageWidthTwips = 12240L;
+        long marginLeftTwips = 1440L;
+        long marginRightTwips = 1440L;
+        if (sectPr != null) {
+            if (sectPr.isSetPgSz()) {
+                CTPageSz pageSz = sectPr.getPgSz();
+                Object widthValue = pageSz.getW();
+                if (widthValue instanceof Number number) {
+                    pageWidthTwips = number.longValue();
+                }
+            }
+            if (sectPr.isSetPgMar()) {
+                CTPageMar pageMar = sectPr.getPgMar();
+                Object leftValue = pageMar.getLeft();
+                if (leftValue instanceof Number number) {
+                    marginLeftTwips = number.longValue();
+                }
+                Object rightValue = pageMar.getRight();
+                if (rightValue instanceof Number number) {
+                    marginRightTwips = number.longValue();
+                }
+            }
+        }
+        long widthTwips = Math.max(1, pageWidthTwips - marginLeftTwips - marginRightTwips);
+        return widthTwips * TWIP_TO_EMU;
+    }
+
+    private long toEmuFromPixels(int pixels, int dpi) {
+        double inches = (double) pixels / (double) dpi;
+        double points = inches * 72.0;
+        return Math.round(Units.toEMU(points));
+    }
+
+    private int safeEmu(long emu) {
+        if (emu > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        if (emu < 0) {
+            return 0;
+        }
+        return (int) emu;
+    }
+
     private String defaultOutputName() {
         return "合并结果_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".docx";
     }
@@ -154,6 +388,11 @@ public class MergeService {
 
     public interface CancelSignal {
         boolean isCancelled();
+    }
+
+    @FunctionalInterface
+    private interface ProgressStepCallback {
+        void step(String name);
     }
 
     public static class MergeCancelledException extends IOException {
@@ -178,6 +417,23 @@ public class MergeService {
                     });
         } catch (IOException ignored) {
             // ignore
+        }
+    }
+
+    private static class ProgressTracker {
+        private final int total;
+        private final ProgressCallback callback;
+        private int current;
+
+        private ProgressTracker(int total, ProgressCallback callback) {
+            this.total = Math.max(total, 1);
+            this.callback = callback;
+            this.current = 0;
+        }
+
+        private void step(String name) {
+            current += 1;
+            callback.onProgress(current, total, name);
         }
     }
 
