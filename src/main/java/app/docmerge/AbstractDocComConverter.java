@@ -1,3 +1,4 @@
+// AbstractDocComConverter.java
 package app.docmerge;
 
 import java.io.IOException;
@@ -71,6 +72,7 @@ public abstract class AbstractDocComConverter implements DocComConverter {
             throw new IOException("临时目录不能为空");
         }
         Files.createDirectories(tempDir);
+
         List<Path> outputs = new ArrayList<>();
         try {
             COM_LOCK.acquire();
@@ -78,12 +80,15 @@ public abstract class AbstractDocComConverter implements DocComConverter {
             Thread.currentThread().interrupt();
             throw new IOException("转换锁获取失败", e);
         }
+
         try {
             for (int i = 0; i < docFiles.size(); i++) {
                 Path input = docFiles.get(i);
                 String outputName = buildOutputName(i, input);
                 Path output = tempDir.resolve(outputName);
+
                 runConversion(input, output);
+
                 if (!Files.exists(output)) {
                     throw new DocComConversionException("转换失败，未生成输出文件",
                             input.toString(), "", "未生成输出文件：" + output, -1);
@@ -108,60 +113,102 @@ public abstract class AbstractDocComConverter implements DocComConverter {
     }
 
     private String buildProbeScript() {
-        StringBuilder builder = new StringBuilder();
-        builder.append("$ErrorActionPreference = 'Stop'").append(System.lineSeparator());
-        builder.append("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8").append(System.lineSeparator());
-        builder.append("$OutputEncoding = [System.Text.Encoding]::UTF8").append(System.lineSeparator());
-        builder.append("$app = New-Object -ComObject ").append(progId()).append(System.lineSeparator());
-        builder.append("try {").append(System.lineSeparator());
-        builder.append("  try { $app.Visible = $false } catch { }").append(System.lineSeparator());
-        builder.append("  try { $app.DisplayAlerts = 0 } catch { }").append(System.lineSeparator());
-        builder.append("} finally {").append(System.lineSeparator());
-        builder.append("  if ($app -ne $null) {").append(System.lineSeparator());
-        builder.append("    try { $app.Quit() | Out-Null } catch { }").append(System.lineSeparator());
-        builder.append("    [System.Runtime.Interopservices.Marshal]::FinalReleaseComObject($app) | Out-Null").append(System.lineSeparator());
-        builder.append("  }").append(System.lineSeparator());
-        builder.append("}").append(System.lineSeparator());
-        return builder.toString();
+        String ls = System.lineSeparator();
+        StringBuilder b = new StringBuilder();
+        b.append("$ErrorActionPreference = 'Stop'").append(ls);
+        b.append("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8").append(ls);
+        b.append("$OutputEncoding = [System.Text.Encoding]::UTF8").append(ls);
+        b.append("try {").append(ls);
+        b.append("  $app = $null").append(ls);
+        b.append("  $app = New-Object -ComObject ").append(progId()).append(ls);
+        b.append("  try {").append(ls);
+        b.append("    try { $app.Visible = $false } catch { }").append(ls);
+        b.append("    try { $app.DisplayAlerts = 0 } catch { }").append(ls);
+        b.append("  } finally {").append(ls);
+        b.append("    if ($app -ne $null) {").append(ls);
+        b.append("      try { $app.Quit() | Out-Null } catch { }").append(ls);
+        b.append("      try { [System.Runtime.Interopservices.Marshal]::FinalReleaseComObject($app) | Out-Null } catch { }").append(ls);
+        b.append("    }").append(ls);
+        b.append("  }").append(ls);
+        b.append("  exit 0").append(ls);
+        b.append("} catch {").append(ls);
+        b.append("  Write-Error ('[COM探测异常] ' + $_.Exception.ToString())").append(ls);
+        b.append("  exit 1").append(ls);
+        b.append("}").append(ls);
+        return b.toString();
     }
 
     private String buildConversionScript(Path input, Path output) {
         int[] priority = saveFormatPriority();
-        StringBuilder builder = new StringBuilder();
-        builder.append("$ErrorActionPreference = 'Stop'").append(System.lineSeparator());
-        builder.append("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8").append(System.lineSeparator());
-        builder.append("$OutputEncoding = [System.Text.Encoding]::UTF8").append(System.lineSeparator());
-        builder.append("$inputPath = '").append(escapePowerShell(input.toString())).append("'").append(System.lineSeparator());
-        builder.append("$outputPath = '").append(escapePowerShell(output.toString())).append("'").append(System.lineSeparator());
-        builder.append("$app = New-Object -ComObject ").append(progId()).append(System.lineSeparator());
-        builder.append("try {").append(System.lineSeparator());
-        builder.append("  try { $app.Visible = $false } catch { }").append(System.lineSeparator());
-        builder.append("  try { $app.DisplayAlerts = 0 } catch { }").append(System.lineSeparator());
-        builder.append("  $doc = $null").append(System.lineSeparator());
-        builder.append("  try {").append(System.lineSeparator());
-        builder.append("    $doc = $app.Documents.Open($inputPath, $false, $true)").append(System.lineSeparator());
-        builder.append("    $saved = $false").append(System.lineSeparator());
-        builder.append("    try { $doc.SaveAs2($outputPath, ").append(priority[0]).append("); $saved = $true } catch {").append(System.lineSeparator());
-        builder.append("      try { $doc.SaveAs2($outputPath, ").append(priority[1]).append("); $saved = $true } catch {").append(System.lineSeparator());
-        builder.append("        try { $doc.SaveAs($outputPath, ").append(priority[0]).append("); $saved = $true } catch {").append(System.lineSeparator());
-        builder.append("          $doc.SaveAs($outputPath, ").append(priority[1]).append("); $saved = $true").append(System.lineSeparator());
-        builder.append("        }").append(System.lineSeparator());
-        builder.append("      }").append(System.lineSeparator());
-        builder.append("    }").append(System.lineSeparator());
-        builder.append("    if (-not $saved) { throw '保存失败' }").append(System.lineSeparator());
-        builder.append("  } finally {").append(System.lineSeparator());
-        builder.append("    if ($doc -ne $null) {").append(System.lineSeparator());
-        builder.append("      try { $doc.Close([ref]$false) | Out-Null } catch { }").append(System.lineSeparator());
-        builder.append("      [System.Runtime.Interopservices.Marshal]::FinalReleaseComObject($doc) | Out-Null").append(System.lineSeparator());
-        builder.append("    }").append(System.lineSeparator());
-        builder.append("  }").append(System.lineSeparator());
-        builder.append("} finally {").append(System.lineSeparator());
-        builder.append("  if ($app -ne $null) {").append(System.lineSeparator());
-        builder.append("    try { $app.Quit() | Out-Null } catch { }").append(System.lineSeparator());
-        builder.append("    [System.Runtime.Interopservices.Marshal]::FinalReleaseComObject($app) | Out-Null").append(System.lineSeparator());
-        builder.append("  }").append(System.lineSeparator());
-        builder.append("}").append(System.lineSeparator());
-        return builder.toString();
+        String ls = System.lineSeparator();
+
+        StringBuilder b = new StringBuilder();
+        b.append("$ErrorActionPreference = 'Stop'").append(ls);
+        b.append("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8").append(ls);
+        b.append("$OutputEncoding = [System.Text.Encoding]::UTF8").append(ls);
+
+        b.append("$inputPath = '").append(escapePowerShell(input.toString())).append("'").append(ls);
+        b.append("$outputPath = '").append(escapePowerShell(output.toString())).append("'").append(ls);
+
+        b.append("try {").append(ls);
+        b.append("  if (Test-Path -LiteralPath $outputPath) { Remove-Item -LiteralPath $outputPath -Force }").append(ls);
+
+        b.append("  $app = $null").append(ls);
+        b.append("  $doc = $null").append(ls);
+        b.append("  $pv  = $null").append(ls);
+
+        b.append("  $app = New-Object -ComObject ").append(progId()).append(ls);
+        b.append("  try {").append(ls);
+        b.append("    try { $app.Visible = $false } catch { }").append(ls);
+        b.append("    try { $app.DisplayAlerts = 0 } catch { }").append(ls);
+        b.append("    try { $app.AutomationSecurity = 3 } catch { }").append(ls);
+
+        // Open：Word 参数签名 -> ProtectedView -> 单参数回落（兼容 Word/WPS）
+        b.append("    try {").append(ls);
+        b.append("      $doc = $app.Documents.Open($inputPath, $false, $true)").append(ls);
+        b.append("    } catch {").append(ls);
+        b.append("      try {").append(ls);
+        b.append("        $pv = $app.ProtectedViewWindows.Open($inputPath)").append(ls);
+        b.append("        $doc = $pv.Edit()").append(ls);
+        b.append("      } catch {").append(ls);
+        b.append("        $doc = $app.Documents.Open($inputPath)").append(ls);
+        b.append("      }").append(ls);
+        b.append("    }").append(ls);
+
+        // Save：SaveAs2/SaveAs + 两种格式优先级 + 最后不带格式
+        b.append("    $saved = $false").append(ls);
+        b.append("    $fmts = @(").append(priority[0]).append(", ").append(priority[1]).append(")").append(ls);
+        b.append("    foreach ($fmt in $fmts) {").append(ls);
+        b.append("      if ($saved) { break }").append(ls);
+        b.append("      try { $doc.SaveAs2($outputPath, $fmt); $saved = $true } catch { }").append(ls);
+        b.append("      if (-not $saved) { try { $doc.SaveAs($outputPath, $fmt); $saved = $true } catch { } }").append(ls);
+        b.append("    }").append(ls);
+        b.append("    if (-not $saved) {").append(ls);
+        b.append("      try { $doc.SaveAs($outputPath); $saved = $true } catch { }").append(ls);
+        b.append("    }").append(ls);
+        b.append("    if (-not $saved) { throw '保存失败' }").append(ls);
+
+        b.append("  } finally {").append(ls);
+        b.append("    if ($doc -ne $null) {").append(ls);
+        // 关键：不要用 [ref]$false，容易参数不匹配导致 finally 再抛异常
+        b.append("      try { $doc.Close($false) | Out-Null } catch { }").append(ls);
+        b.append("      try { [System.Runtime.Interopservices.Marshal]::FinalReleaseComObject($doc) | Out-Null } catch { }").append(ls);
+        b.append("    }").append(ls);
+        b.append("    if ($pv -ne $null) { try { $pv.Close() | Out-Null } catch { } }").append(ls);
+        b.append("    if ($app -ne $null) {").append(ls);
+        b.append("      try { $app.Quit() | Out-Null } catch { }").append(ls);
+        b.append("      try { [System.Runtime.Interopservices.Marshal]::FinalReleaseComObject($app) | Out-Null } catch { }").append(ls);
+        b.append("    }").append(ls);
+        b.append("  }").append(ls);
+
+        b.append("  exit 0").append(ls);
+        b.append("} catch {").append(ls);
+        b.append("  Write-Error ('[COM异常] ' + $_.Exception.ToString())").append(ls);
+        b.append("  try { Write-Error ('[错误记录] ' + ($_ | Out-String)) } catch { }").append(ls);
+        b.append("  exit 1").append(ls);
+        b.append("}").append(ls);
+
+        return b.toString();
     }
 
     private String buildOutputName(int index, Path input) {
