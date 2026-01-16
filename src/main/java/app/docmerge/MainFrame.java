@@ -1,6 +1,7 @@
 package app.docmerge;
 
 import javax.swing.BorderFactory;
+import javax.swing.ButtonGroup;
 import javax.swing.JButton;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -8,6 +9,7 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JProgressBar;
+import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
@@ -61,7 +63,13 @@ public class MainFrame extends JFrame {
     private final JButton selectOutputButton = new JButton("选择输出目录");
     private final JButton mergeButton = new JButton("开始合并");
     private final JButton cancelButton = new JButton("取消");
+    private final JRadioButton autoModeButton = new JRadioButton("自动（Word优先）");
+    private final JRadioButton wordOnlyButton = new JRadioButton("仅 Word");
+    private final JRadioButton wpsOnlyButton = new JRadioButton("仅 WPS");
+    private final JButton probeEnvButton = new JButton("检测环境");
     private final JLabel wordStatusLabel = new JLabel();
+    private final JLabel wpsStatusLabel = new JLabel();
+    private final JLabel modeStatusLabel = new JLabel();
     private final JButton clearLogButton = new JButton("清空");
     private final JButton copyLogButton = new JButton("复制全部");
     private final JProgressBar progressBar = new JProgressBar();
@@ -74,10 +82,11 @@ public class MainFrame extends JFrame {
     private final FileScanner fileScanner = new FileScanner();
     private final UiLogger logger = new UiLogger(logArea);
     private final DocComConverterSelector converterSelector = new DocComConverterSelector();
+    private final DocComConverterResolver converterResolver = new DocComConverterResolver(converterSelector);
     private ConfigStore.ConfigData configData;
     private List<FileItem> currentItems = new ArrayList<>();
     private SwingWorker<Boolean, String> worker;
-    private DocComConverterSelector.ProbeSummary probeSummary;
+    private DocComConverterResolver.Resolution probeResolution;
 
     public MainFrame() {
         super("Word文档合并工具-- 黄莉专用版");
@@ -88,7 +97,6 @@ public class MainFrame extends JFrame {
         inputField.setEditable(false);
         outputField.setEditable(false);
         outputNameField.setText(defaultOutputName());
-        refreshComProbeStatus();
 
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDragEnabled(true);
@@ -119,6 +127,7 @@ public class MainFrame extends JFrame {
 
         bindActions();
         loadConfig();
+        refreshComProbeStatus(true);
         logComProbeStatus();
     }
 
@@ -148,11 +157,29 @@ public class MainFrame extends JFrame {
         outputPanel.add(new JLabel("输出文件名"));
         outputNameField.setPreferredSize(new Dimension(240, 28));
         outputPanel.add(outputNameField);
-        outputPanel.add(wordStatusLabel);
+
+        JPanel docEnginePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        docEnginePanel.add(new JLabel("DOC 转换引擎"));
+        ButtonGroup group = new ButtonGroup();
+        group.add(autoModeButton);
+        group.add(wordOnlyButton);
+        group.add(wpsOnlyButton);
+        docEnginePanel.add(autoModeButton);
+        docEnginePanel.add(wordOnlyButton);
+        docEnginePanel.add(wpsOnlyButton);
+        docEnginePanel.add(probeEnvButton);
+
+        JPanel statusPanel = new JPanel();
+        statusPanel.setLayout(new javax.swing.BoxLayout(statusPanel, javax.swing.BoxLayout.Y_AXIS));
+        statusPanel.add(wordStatusLabel);
+        statusPanel.add(wpsStatusLabel);
+        statusPanel.add(modeStatusLabel);
+        docEnginePanel.add(statusPanel);
 
         panel.add(inputPanel);
         panel.add(listActions);
         panel.add(outputPanel);
+        panel.add(docEnginePanel);
         return panel;
     }
 
@@ -209,6 +236,13 @@ public class MainFrame extends JFrame {
         cancelButton.addActionListener(event -> cancelMerge());
         clearLogButton.addActionListener(event -> logger.clear());
         copyLogButton.addActionListener(event -> copyLog());
+        probeEnvButton.addActionListener(event -> {
+            refreshComProbeStatus(true);
+            logComProbeStatus();
+        });
+        autoModeButton.addActionListener(event -> handleModeChange());
+        wordOnlyButton.addActionListener(event -> handleModeChange());
+        wpsOnlyButton.addActionListener(event -> handleModeChange());
         outputNameField.addFocusListener(new FocusAdapter() {
             @Override
             public void focusLost(FocusEvent e) {
@@ -228,6 +262,8 @@ public class MainFrame extends JFrame {
         if (configData.getLastOutputFileName() != null && !configData.getLastOutputFileName().isBlank()) {
             outputNameField.setText(configData.getLastOutputFileName());
         }
+        DocConverterMode mode = DocConverterMode.fromConfig(configData.getDocConverterMode());
+        applyModeSelection(mode);
         if (!configData.getLastFileList().isEmpty()) {
             currentItems = loadFileList(configData.getLastFileList());
             refreshTable();
@@ -483,6 +519,7 @@ public class MainFrame extends JFrame {
         configData.setLastOutputFileName(outputNameField.getText().trim());
         configData.setLastFileList(serializeItems());
         configData.setPerDirOrder(buildPerDirOrder());
+        configData.setDocConverterMode(getSelectedMode().name());
         configStore.save(configData);
     }
 
@@ -550,10 +587,14 @@ public class MainFrame extends JFrame {
                 toMerge.add(item);
             }
         }
-        refreshComProbeStatus();
+        refreshComProbeStatus(false);
         if (toMerge.stream().anyMatch(this::isDocItem) && !isDocConversionAvailable()) {
-            showError("当前环境无法进行 .doc 完美转换（Word/WPS COM 不可用）。请移除 .doc 文件后重试。");
-            logProbeFailure();
+            DocComConverterResolver.Resolution resolution = resolveProbe(false);
+            String message = resolution.errorMessage() == null
+                    ? "当前环境无法进行 .doc 完美转换。请移除 .doc 文件后重试。"
+                    : resolution.errorMessage();
+            showError(message);
+            logProbeFailure(resolution);
             return;
         }
         if (toMerge.isEmpty()) {
@@ -569,11 +610,12 @@ public class MainFrame extends JFrame {
         statusLabel.setText("开始合并");
 
         MergeService service = new MergeService();
+        DocConverterMode mode = getSelectedMode();
         worker = new SwingWorker<>() {
             @Override
             protected Boolean doInBackground() {
                 try {
-                    service.merge(new ArrayList<>(toMerge), outputDir, outputName, logger,
+                    service.merge(new ArrayList<>(toMerge), outputDir, outputName, mode, converterResolver, logger,
                             (current, total, name) -> publish("正在处理 " + current + "/" + total + "：" + name),
                             this::isCancelled);
                     return true;
@@ -696,10 +738,13 @@ public class MainFrame extends JFrame {
             }
         }
         if (!blocked.isEmpty()) {
-            String message = "当前环境无法进行 .doc 完美转换（Word/WPS COM 不可用）。已阻止加入 .doc 文件（"
-                    + action + "）：共 " + blocked.size() + " 个";
+            DocComConverterResolver.Resolution resolution = resolveProbe(false);
+            String reason = resolution.errorMessage() == null
+                    ? "当前环境无法进行 .doc 完美转换"
+                    : resolution.errorMessage();
+            String message = reason + "。已阻止加入 .doc 文件（" + action + "）：共 " + blocked.size() + " 个";
             logger.warn(message);
-            logProbeFailure();
+            logProbeFailure(resolution);
             showError(message);
         }
         return filtered;
@@ -707,8 +752,12 @@ public class MainFrame extends JFrame {
 
     private boolean isDocBlocked(FileItem item) {
         if (!isDocConversionAvailable() && isDocItem(item)) {
-            logger.warn("当前环境无法进行 .doc 完美转换（Word/WPS COM 不可用）。已跳过：" + item.getPath());
-            logProbeFailure();
+            DocComConverterResolver.Resolution resolution = resolveProbe(false);
+            String reason = resolution.errorMessage() == null
+                    ? "当前环境无法进行 .doc 完美转换"
+                    : resolution.errorMessage();
+            logger.warn(reason + "。已跳过：" + item.getPath());
+            logProbeFailure(resolution);
             return true;
         }
         return false;
@@ -718,40 +767,72 @@ public class MainFrame extends JFrame {
         return "doc".equalsIgnoreCase(item.getExtension());
     }
 
-    private void refreshComProbeStatus() {
-        probeSummary = converterSelector.probeAll();
-        String wordStatus = probeSummary.word().available() ? "可用" : "不可用";
-        String wpsStatus = probeSummary.wps().available() ? "可用" : "不可用";
-        String engine = probeSummary.currentEngineLabel();
-        wordStatusLabel.setText("<html>Word 完美转换：" + wordStatus
-                + "<br>WPS 完美转换：" + wpsStatus
-                + "<br>当前引擎：" + engine + "</html>");
+    private void refreshComProbeStatus(boolean forceRefresh) {
+        DocComConverterResolver.Resolution resolution = resolveProbe(forceRefresh);
+        DocComConverterSelector.ProbeSummary summary = resolution.probeSummary();
+        String wordStatus = summary.word().available() ? "可用" : "不可用";
+        String wpsStatus = summary.wps().available() ? "可用" : "不可用";
+        wordStatusLabel.setText("Word： " + wordStatus);
+        wpsStatusLabel.setText("WPS： " + wpsStatus);
+        modeStatusLabel.setText("当前模式： " + resolution.modeLabel());
     }
 
     private void logComProbeStatus() {
-        if (probeSummary == null) {
+        if (probeResolution == null) {
             return;
         }
-        logger.info("Word 完美转换：" + (probeSummary.word().available() ? "可用" : "不可用"));
-        logger.info("WPS 完美转换：" + (probeSummary.wps().available() ? "可用" : "不可用"));
-        logger.info("当前引擎：" + probeSummary.currentEngineLabel());
+        DocComConverterSelector.ProbeSummary summary = probeResolution.probeSummary();
+        logger.info("Word 完美转换：" + (summary.word().available() ? "可用" : "不可用"));
+        logger.info("WPS 完美转换：" + (summary.wps().available() ? "可用" : "不可用"));
+        logger.info("DOC 转换模式：" + probeResolution.modeLabel());
     }
 
     private boolean isDocConversionAvailable() {
-        return probeSummary != null && probeSummary.anyAvailable();
+        DocComConverterResolver.Resolution resolution = resolveProbe(false);
+        return resolution.selection() != null;
     }
 
-    private void logProbeFailure() {
-        if (probeSummary == null) {
+    private void logProbeFailure(DocComConverterResolver.Resolution resolution) {
+        if (resolution == null || resolution.probeSummary() == null) {
             logger.warn("COM 探测失败：未知原因");
             return;
         }
-        DocComConverterSelector.EngineStatus word = probeSummary.word();
-        DocComConverterSelector.EngineStatus wps = probeSummary.wps();
+        DocComConverterSelector.EngineStatus word = resolution.probeSummary().word();
+        DocComConverterSelector.EngineStatus wps = resolution.probeSummary().wps();
         logger.warn("Word 探测状态：" + word.message() + "，exitCode=" + word.exitCode()
                 + "\nstderr:\n" + word.stderr());
         logger.warn("WPS 探测状态：" + wps.message() + "，exitCode=" + wps.exitCode()
                 + "\nstderr:\n" + wps.stderr());
+    }
+
+    private DocComConverterResolver.Resolution resolveProbe(boolean forceRefresh) {
+        DocConverterMode mode = getSelectedMode();
+        probeResolution = converterResolver.resolve(mode, forceRefresh);
+        return probeResolution;
+    }
+
+    private DocConverterMode getSelectedMode() {
+        if (wordOnlyButton.isSelected()) {
+            return DocConverterMode.WORD_ONLY;
+        }
+        if (wpsOnlyButton.isSelected()) {
+            return DocConverterMode.WPS_ONLY;
+        }
+        return DocConverterMode.AUTO;
+    }
+
+    private void applyModeSelection(DocConverterMode mode) {
+        switch (mode) {
+            case WORD_ONLY -> wordOnlyButton.setSelected(true);
+            case WPS_ONLY -> wpsOnlyButton.setSelected(true);
+            default -> autoModeButton.setSelected(true);
+        }
+    }
+
+    private void handleModeChange() {
+        configData.setDocConverterMode(getSelectedMode().name());
+        persistState();
+        refreshComProbeStatus(false);
     }
 
     private static class MissingAwareRenderer extends DefaultTableCellRenderer {

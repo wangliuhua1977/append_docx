@@ -32,6 +32,9 @@ public class ConfigStore {
             if (data.lastFileList == null) {
                 data.lastFileList = new ArrayList<>();
             }
+            if (data.docConverterMode == null || data.docConverterMode.isBlank()) {
+                data.docConverterMode = DocConverterMode.AUTO.name();
+            }
             return data;
         } catch (IOException e) {
             return new ConfigData();
@@ -51,6 +54,7 @@ public class ConfigStore {
         private String lastInputDir;
         private String lastOutputDir;
         private String lastOutputFileName;
+        private String docConverterMode = DocConverterMode.AUTO.name();
         private Map<String, List<String>> perDirOrder = new HashMap<>();
         private List<FileEntry> lastFileList = new ArrayList<>();
 
@@ -76,6 +80,14 @@ public class ConfigStore {
 
         public void setLastOutputFileName(String lastOutputFileName) {
             this.lastOutputFileName = lastOutputFileName;
+        }
+
+        public String getDocConverterMode() {
+            return docConverterMode;
+        }
+
+        public void setDocConverterMode(String docConverterMode) {
+            this.docConverterMode = docConverterMode;
         }
 
         public Map<String, List<String>> getPerDirOrder() {

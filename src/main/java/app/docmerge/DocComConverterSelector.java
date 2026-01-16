@@ -3,6 +3,9 @@ package app.docmerge;
 public class DocComConverterSelector {
     private final MsWordComConverter wordConverter;
     private final WpsComConverter wpsConverter;
+    private ProbeSummary cachedSummary;
+    private long lastProbeMillis;
+    private static final long CACHE_TTL_MILLIS = 60_000L;
 
     public DocComConverterSelector() {
         PowerShellRunner runner = new PowerShellRunner();
@@ -11,10 +14,19 @@ public class DocComConverterSelector {
     }
 
     public ProbeSummary probeAll() {
+        return probeAll(false);
+    }
+
+    public synchronized ProbeSummary probeAll(boolean forceRefresh) {
+        if (!forceRefresh && cachedSummary != null && !isExpired()) {
+            return cachedSummary;
+        }
         EngineStatus word = probeWord();
         EngineStatus wps = probeWps();
         Selection selection = selectAvailable(word, wps);
-        return new ProbeSummary(word, wps, selection);
+        cachedSummary = new ProbeSummary(word, wps, selection);
+        lastProbeMillis = System.currentTimeMillis();
+        return cachedSummary;
     }
 
     public EngineStatus probeWord() {
@@ -25,6 +37,14 @@ public class DocComConverterSelector {
     public EngineStatus probeWps() {
         DocComProbeResult result = wpsConverter.probe();
         return new EngineStatus("WPS", wpsConverter.engineName(), result.available(), result.message(), result.stdout(), result.stderr(), result.exitCode());
+    }
+
+    public MsWordComConverter wordConverter() {
+        return wordConverter;
+    }
+
+    public WpsComConverter wpsConverter() {
+        return wpsConverter;
     }
 
     private Selection selectAvailable(EngineStatus word, EngineStatus wps) {
@@ -62,5 +82,12 @@ public class DocComConverterSelector {
             }
             return selection.status().engineName();
         }
+    }
+
+    private boolean isExpired() {
+        if (lastProbeMillis <= 0) {
+            return true;
+        }
+        return System.currentTimeMillis() - lastProbeMillis > CACHE_TTL_MILLIS;
     }
 }
