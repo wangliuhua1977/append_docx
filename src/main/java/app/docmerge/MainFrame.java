@@ -61,6 +61,7 @@ public class MainFrame extends JFrame {
     private final JButton selectOutputButton = new JButton("选择输出目录");
     private final JButton mergeButton = new JButton("开始合并");
     private final JButton cancelButton = new JButton("取消");
+    private final JLabel wordStatusLabel = new JLabel();
     private final JButton clearLogButton = new JButton("清空");
     private final JButton copyLogButton = new JButton("复制全部");
     private final JProgressBar progressBar = new JProgressBar();
@@ -72,9 +73,11 @@ public class MainFrame extends JFrame {
     private final ConfigStore configStore = new ConfigStore();
     private final FileScanner fileScanner = new FileScanner();
     private final UiLogger logger = new UiLogger(logArea);
+    private final WordDocConverter wordDocConverter = new WordDocConverter();
     private ConfigStore.ConfigData configData;
     private List<FileItem> currentItems = new ArrayList<>();
     private SwingWorker<Boolean, String> worker;
+    private final boolean wordConversionAvailable;
 
     public MainFrame() {
         super("Word文档合并工具-- 黄莉专用版");
@@ -85,6 +88,8 @@ public class MainFrame extends JFrame {
         inputField.setEditable(false);
         outputField.setEditable(false);
         outputNameField.setText(defaultOutputName());
+        wordConversionAvailable = wordDocConverter.isSupported();
+        wordStatusLabel.setText("Word 完美转换：" + (wordConversionAvailable ? "可用" : "不可用"));
 
         table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
         table.setDragEnabled(true);
@@ -115,6 +120,8 @@ public class MainFrame extends JFrame {
 
         bindActions();
         loadConfig();
+        logger.info("Word 完美转换：" + (wordConversionAvailable ? "可用" : "不可用")
+                + (wordConversionAvailable ? "" : "（需要 Windows + Microsoft Word）"));
     }
 
     private JPanel buildTopPanel() {
@@ -143,6 +150,7 @@ public class MainFrame extends JFrame {
         outputPanel.add(new JLabel("输出文件名"));
         outputNameField.setPreferredSize(new Dimension(240, 28));
         outputPanel.add(outputNameField);
+        outputPanel.add(wordStatusLabel);
 
         panel.add(inputPanel);
         panel.add(listActions);
@@ -244,21 +252,27 @@ public class MainFrame extends JFrame {
                     if (sourceDir == null || sourceDir.isBlank()) {
                         sourceDir = path.getParent() == null ? "" : path.getParent().toString();
                     }
-                    items.add(new FileItem(path,
+                    FileItem item = new FileItem(path,
                             path.getFileName().toString(),
                             fileScanner.extensionOf(path.getFileName().toString()),
                             attrs.size(),
                             attrs.lastModifiedTime(),
                             sourceDir,
                             entry.isChecked(),
-                            FileItem.Status.OK));
+                            FileItem.Status.OK);
+                    if (isDocBlocked(item)) {
+                        continue;
+                    }
+                    items.add(item);
                 } catch (IOException e) {
                     items.add(createMissingItem(entry, path));
                 }
             } else {
                 FileItem missing = createMissingItem(entry, path);
-                items.add(missing);
-                logger.warn("文件不存在，已标记为缺失：" + path);
+                if (!isDocBlocked(missing)) {
+                    items.add(missing);
+                    logger.warn("文件不存在，已标记为缺失：" + path);
+                }
             }
         }
         return items;
@@ -321,6 +335,7 @@ public class MainFrame extends JFrame {
     private void addDirectoryFiles(Path directory, boolean replaceSameDir) {
         try {
             List<FileItem> scanned = fileScanner.scan(directory);
+            scanned = filterDocFilesIfUnsupported(scanned, "目录扫描");
             Map<String, List<String>> perDirOrder = configData.getPerDirOrder();
             List<String> savedOrder = perDirOrder.getOrDefault(directory.toString(), Collections.emptyList());
             List<FileItem> ordered = applySavedOrder(scanned, savedOrder);
@@ -348,6 +363,7 @@ public class MainFrame extends JFrame {
             for (var file : files) {
                 fileScanner.createFileItem(file.toPath(), true).ifPresent(items::add);
             }
+            items = filterDocFilesIfUnsupported(items, "添加文件");
             items.sort(fileScanner.defaultComparator());
             int added = addItems(items);
             persistState();
@@ -536,6 +552,11 @@ public class MainFrame extends JFrame {
                 toMerge.add(item);
             }
         }
+        if (!wordConversionAvailable && toMerge.stream().anyMatch(this::isDocItem)) {
+            showError("当前环境无法进行 .doc 完美转换，需要 Windows + Microsoft Word。请移除 .doc 文件后重试。");
+            logger.warn("检测到 .doc 文件，但 Word 不可用，已阻止合并");
+            return;
+        }
         if (toMerge.isEmpty()) {
             showError("未选择任何待合并文件");
             return;
@@ -660,6 +681,40 @@ public class MainFrame extends JFrame {
 
     private void showError(String message) {
         JOptionPane.showMessageDialog(this, message, "错误", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private List<FileItem> filterDocFilesIfUnsupported(List<FileItem> items, String action) {
+        if (wordConversionAvailable) {
+            return items;
+        }
+        List<FileItem> filtered = new ArrayList<>();
+        List<FileItem> blocked = new ArrayList<>();
+        for (FileItem item : items) {
+            if (isDocItem(item)) {
+                blocked.add(item);
+            } else {
+                filtered.add(item);
+            }
+        }
+        if (!blocked.isEmpty()) {
+            String message = "当前环境无法进行 .doc 完美转换，需要 Windows + Microsoft Word。已阻止加入 .doc 文件（"
+                    + action + "）：共 " + blocked.size() + " 个";
+            logger.warn(message);
+            showError(message);
+        }
+        return filtered;
+    }
+
+    private boolean isDocBlocked(FileItem item) {
+        if (!wordConversionAvailable && isDocItem(item)) {
+            logger.warn("当前环境无法进行 .doc 完美转换，需要 Windows + Microsoft Word。已跳过：" + item.getPath());
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isDocItem(FileItem item) {
+        return "doc".equalsIgnoreCase(item.getExtension());
     }
 
     private static class MissingAwareRenderer extends DefaultTableCellRenderer {
