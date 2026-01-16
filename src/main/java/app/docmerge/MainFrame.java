@@ -1,5 +1,6 @@
 package app.docmerge;
 
+import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
@@ -26,6 +27,7 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Image;
+import java.awt.Taskbar;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.FocusAdapter;
@@ -33,6 +35,7 @@ import java.awt.event.FocusEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -52,6 +55,9 @@ import java.util.regex.Pattern;
 public class MainFrame extends JFrame {
     private static final String APP_TITLE = "超级word拼接- 飞天专版";
     private static final Pattern ILLEGAL_NAME = Pattern.compile("[\\\\/:*?\"<>|]");
+
+    // 单图标：放到 src/main/resources/icons/app.png
+    private static final String APP_ICON_PATH = "/icons/app.png";
 
     private final JTextField inputField = new JTextField();
     private final JTextField outputField = new JTextField();
@@ -110,6 +116,8 @@ public class MainFrame extends JFrame {
         setSize(1200, 800);
         setLocationRelativeTo(null);
 
+        applyWindowIconFromResources();
+
         inputField.setEditable(false);
         outputField.setEditable(false);
         outputNameField.setText(defaultOutputName());
@@ -156,6 +164,31 @@ public class MainFrame extends JFrame {
                 persistState();
             }
         });
+    }
+
+    private void applyWindowIconFromResources() {
+        try {
+            URL url = getClass().getResource(APP_ICON_PATH);
+            if (url == null) {
+                logger.warn("窗口图标资源不存在：" + APP_ICON_PATH);
+                return;
+            }
+            Image img = ImageIO.read(url);
+            if (img == null) {
+                logger.warn("窗口图标读取失败：" + APP_ICON_PATH);
+                return;
+            }
+            setIconImage(img);
+            try {
+                if (Taskbar.isTaskbarSupported()) {
+                    Taskbar.getTaskbar().setIconImage(img);
+                }
+            } catch (Throwable ignored) {
+                // ignore
+            }
+        } catch (Exception e) {
+            logger.warn("加载窗口图标失败：" + e.getMessage());
+        }
     }
 
     private JPanel buildTopPanel() {
